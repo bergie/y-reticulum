@@ -1,20 +1,20 @@
 {
   "compilerOptions": {
-    "rootDir": ".",
-    "outDir": "./types/",
-    "module": "nodenext",
-    "target": "esnext",
-    "types": [
-      "node"
-    ],
+    "target": "es2022",
+    "lib": ["es2022", "dom"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
     "checkJs": true,
-    "emitDeclarationOnly": true,
+    "strict": true,
+    "noImplicitAny": true,
     "declaration": true,
-    "allowJs": true
+    "emitDeclarationOnly": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "esModuleInterop": true,
+    "skipLibCheck": true
   },
-  "include": [
-    "src/*.ts",
-    "src/**/*.js",
-    "src/**/**/*.js"
-  ]
+  "include": ["src/**/*.js"],
+  "exclude": ["node_modules", "dist", "y-webrtc", "test", "examples"]
 }
