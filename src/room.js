@@ -4,15 +4,20 @@
  *
  * A Room owns the local Reticulum destination for a Yjs room, announces it for
  * discovery, learns peers from their announces, and maintains a pairwise
- * {@link PeerConn} (Link) to each one. It is transport-only: it establishes
- * the peer mesh and emits peer add/remove, but does not yet exchange Yjs sync
- * messages (that lands in Phase 3).
+ * {@link PeerConn} (Link) to each one. Over each link it runs the Yjs sync
+ * protocol (y-protocols/sync) and awareness protocol, broadcasting local Doc
+ * and Awareness updates and applying inbound ones.
  *
  * To avoid the two peers both trying to open a Link to each other (WebRTC
  * "glare"), exactly one side initiates: the peer whose destination hash is
  * lexicographically smaller. The other simply accepts.
  */
+import * as encoding from "lib0/encoding";
 import { Destination, DestType, toHex } from "reticulum-js";
+import * as awarenessProtocol from "y-protocols/awareness";
+import * as syncProtocol from "y-protocols/sync";
+import * as Y from "yjs";
+import { messageAwareness, messageSync, readMessage } from "./messages.js";
 import { PeerConn } from "./peer-conn.js";
 
 /** Constant-time-ish equality for two equal-length byte arrays. */
@@ -27,16 +32,20 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
  * @typedef {Object} RoomCallbacks
  * @property {(added: string[], removed: string[]) => void} onPeers
  *   Fired whenever peers are discovered or drop off. Ids are hex link_ids.
+ * @property {(synced: boolean) => void} onSynced
+ *   Fired when the room's overall sync state changes.
  */
 
 /**
- * One Yjs room: a local destination that announces for discovery, plus the
- * set of pairwise {@link PeerConn} links to discovered peers. Transport-only —
- * no Yjs sync happens here yet.
+ * One Yjs room: a local destination that announces for discovery, plus the set
+ * of pairwise {@link PeerConn} links to discovered peers, with the Yjs sync
+ * and awareness protocols running over each link.
  */
 export class Room {
   /**
    * @param {object} options
+   * @param {Y.Doc} options.doc
+   * @param {awarenessProtocol.Awareness} options.awareness
    * @param {import("reticulum-js").Reticulum} options.reticulum
    * @param {import("reticulum-js").Identity} options.identity
    * @param {string} options.appName - Deterministic destination app-name for the room.
@@ -45,6 +54,8 @@ export class Room {
    * @param {RoomCallbacks} options.callbacks
    */
   constructor({
+    doc,
+    awareness,
     reticulum,
     identity,
     appName,
@@ -52,6 +63,8 @@ export class Room {
     announceIntervalMs,
     callbacks,
   }) {
+    this.doc = doc;
+    this.awareness = awareness;
     this.rns = reticulum;
     this.identity = identity;
     this.appName = appName;
@@ -64,6 +77,8 @@ export class Room {
     /** Hex of this room destination's hash; set once connected. */
     this.myHex = "";
     this.connected = false;
+    /** Whether the Doc is synced with the current peer mesh. */
+    this.synced = false;
 
     /** @type {Map<string, PeerConn>} hex link_id → conn */
     this.peerConns = new Map();
@@ -77,6 +92,8 @@ export class Room {
 
     this._onAnnounce = this._onAnnounce.bind(this);
     this._onLinkRequest = this._onLinkRequest.bind(this);
+    this._docUpdateHandler = this._docUpdateHandler.bind(this);
+    this._awarenessUpdateHandler = this._awarenessUpdateHandler.bind(this);
   }
 
   /** Creates + binds the room destination, announces, and starts discovery. */
@@ -96,6 +113,8 @@ export class Room {
 
     this.rns.transport.addEventListener("announce", this._onAnnounce);
     this.dest.addEventListener("link_request", this._onLinkRequest);
+    this.doc.on("update", this._docUpdateHandler);
+    this.awareness.on("update", this._awarenessUpdateHandler);
 
     await this.dest.announce();
     this.announceTimer = setInterval(() => {
@@ -116,12 +135,22 @@ export class Room {
     }
     this.rns.transport.removeEventListener("announce", this._onAnnounce);
     this.dest?.removeEventListener("link_request", this._onLinkRequest);
+    this.doc.off("update", this._docUpdateHandler);
+    this.awareness.off("update", this._awarenessUpdateHandler);
+
+    // Tell peers to drop our awareness state before the links come down.
+    awarenessProtocol.removeAwarenessStates(
+      this.awareness,
+      [this.doc.clientID],
+      "disconnect",
+    );
 
     const removed = [...this.peerConns.keys()];
     for (const conn of this.peerConns.values()) conn.destroy();
     this.peerConns.clear();
     this.linkedDestHexes.clear();
     this.pendingInitiates.clear();
+    this.synced = false;
     if (removed.length) this.callbacks.onPeers([], removed);
 
     if (this.dest) {
@@ -204,6 +233,8 @@ export class Room {
   }
 
   /**
+   * Registers a newly active peer and kicks off the Yjs sync handshake
+   * (syncStep1 + local awareness), mirroring y-webrtc's peer-on-connect path.
    * @param {import("reticulum-js").Link} link
    * @param {Uint8Array|null} remoteDestHash
    */
@@ -216,6 +247,7 @@ export class Room {
     });
     this.peerConns.set(peer.peerId, peer);
     this.callbacks.onPeers([peer.peerId], []);
+    this._sendInitialSync(peer);
   }
 
   /** @param {PeerConn} peer */
@@ -224,13 +256,104 @@ export class Room {
     if (peer.remoteDestHash)
       this.linkedDestHexes.delete(toHex(peer.remoteDestHash));
     this.callbacks.onPeers([], [peer.peerId]);
+    this._checkSynced();
   }
 
   /**
-   * Inbound raw bytes from a peer. Phase 2 has no sync protocol yet, so this is
-   * a no-op; Phase 3 decodes the Yjs message tag here.
-   * @param {Uint8Array} _payload
-   * @param {PeerConn} _peer
+   * Inbound raw bytes from a peer: decode and apply, send back any reply, and
+   * mark the peer (and possibly the room) synced.
+   * @param {Uint8Array} payload
+   * @param {PeerConn} peer
    */
-  _onPeerData(_payload, _peer) {}
+  _onPeerData(payload, peer) {
+    const reply = readMessage(
+      this.doc,
+      this.awareness,
+      payload,
+      peer,
+      this.synced,
+      () => {
+        peer.synced = true;
+        this._checkSynced();
+      },
+    );
+    if (reply) this._send(peer, reply);
+  }
+
+  /**
+   * Local Doc update → broadcast a sync `update` to every peer.
+   * @param {Uint8Array} update
+   * @param {any} _origin
+   */
+  _docUpdateHandler(update, _origin) {
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageSync);
+    syncProtocol.writeUpdate(encoder, update);
+    this._broadcast(encoding.toUint8Array(encoder));
+  }
+
+  /**
+   * Local Awareness update → broadcast an awareness update to every peer.
+   * @param {{added: number[], updated: number[], removed: number[]}} changes
+   * @param {any} _origin
+   */
+  _awarenessUpdateHandler({ added, updated, removed }, _origin) {
+    const changedClients = added.concat(updated, removed);
+    const encoder = encoding.createEncoder();
+    encoding.writeVarUint(encoder, messageAwareness);
+    encoding.writeVarUint8Array(
+      encoder,
+      awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedClients),
+    );
+    this._broadcast(encoding.toUint8Array(encoder));
+  }
+
+  /**
+   * Sends the initial sync handshake to a freshly connected peer: a syncStep1
+   * (requesting their state) and, if we have any, our awareness state. Both
+   * sides do this, so state flows both ways.
+   * @param {PeerConn} peer
+   */
+  _sendInitialSync(peer) {
+    const step1 = encoding.createEncoder();
+    encoding.writeVarUint(step1, messageSync);
+    syncProtocol.writeSyncStep1(step1, this.doc);
+    this._send(peer, encoding.toUint8Array(step1));
+
+    const clients = Array.from(this.awareness.getStates().keys());
+    if (clients.length > 0) {
+      const aw = encoding.createEncoder();
+      encoding.writeVarUint(aw, messageAwareness);
+      encoding.writeVarUint8Array(
+        aw,
+        awarenessProtocol.encodeAwarenessUpdate(this.awareness, clients),
+      );
+      this._send(peer, encoding.toUint8Array(aw));
+    }
+  }
+
+  /** @param {Uint8Array} bytes */
+  _broadcast(bytes) {
+    for (const peer of this.peerConns.values()) this._send(peer, bytes);
+  }
+
+  /** @param {PeerConn} peer @param {Uint8Array} bytes */
+  _send(peer, bytes) {
+    peer.send(bytes).catch(() => {});
+  }
+
+  /** Recomputes room-level sync state and emits on change. */
+  _checkSynced() {
+    let synced = true;
+    for (const peer of this.peerConns.values()) {
+      if (!peer.synced) {
+        synced = false;
+        break;
+      }
+    }
+    if (synced !== this.synced) {
+      this.synced = synced;
+      this.callbacks.onSynced(synced);
+    }
+  }
 }

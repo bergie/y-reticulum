@@ -44,7 +44,7 @@ import { Room } from "./room.js";
  * @property {(event: { connected: boolean }) => void} status
  *   Fired when the provider (dis)connects from the mesh.
  * @property {(event: { synced: boolean }) => void} synced
- *   Fired when sync state with the peer mesh changes.
+ *   Fired when sync state with the peer mesh changes. (Phase 3.)
  * @property {(event: { added: Array<string>, removed: Array<string> }) => void} peers
  *   Fired when peers are discovered or drop off.
  */
@@ -103,6 +103,8 @@ export class ReticulumProvider extends ObservableV2 {
 
     const appName = await roomDestinationName(this.roomName);
     this.room = new Room({
+      doc: this.doc,
+      awareness: this.awareness,
       reticulum: this.reticulum,
       identity: /** @type {Identity} */ (this.identity),
       appName,
@@ -113,6 +115,8 @@ export class ReticulumProvider extends ObservableV2 {
           /** @type {string[]} */ added,
           /** @type {string[]} */ removed,
         ) => this.emit("peers", [{ added, removed }]),
+        onSynced: (/** @type {boolean} */ synced) =>
+          this.emit("synced", [{ synced }]),
       },
     });
     await this.room.connect();
