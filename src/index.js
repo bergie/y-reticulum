@@ -3,6 +3,7 @@
  * @description Public entry point for the `y-reticulum` package.
  */
 
+export { getCompressionProvider } from "./compression.js";
 export { roomDestinationName } from "./destination.js";
 export {
   messageAwareness,

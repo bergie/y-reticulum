@@ -17,6 +17,7 @@ import { Destination, DestType, toHex } from "reticulum-js";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
 import * as Y from "yjs";
+import { getCompressionProvider } from "./compression.js";
 import { messageAwareness, messageSync, readMessage } from "./messages.js";
 import { PeerConn } from "./peer-conn.js";
 
@@ -79,6 +80,8 @@ export class Room {
     this.connected = false;
     /** Whether the Doc is synced with the current peer mesh. */
     this.synced = false;
+    /** Shared bzip2 provider for Resource compression; set on connect(). */
+    this.bz2 = null;
 
     /** @type {Map<string, PeerConn>} hex link_id → conn */
     this.peerConns = new Map();
@@ -99,6 +102,7 @@ export class Room {
   /** Creates + binds the room destination, announces, and starts discovery. */
   async connect() {
     if (this.connected) return;
+    this.bz2 = await getCompressionProvider();
     this.dest = await Destination.IN(
       this.appName,
       DestType.SINGLE,
@@ -242,6 +246,7 @@ export class Room {
     const peer = new PeerConn({
       link,
       remoteDestHash,
+      bz2: this.bz2,
       onData: (payload, p) => this._onPeerData(payload, p),
       onClose: (p) => this._onPeerClose(p),
     });
