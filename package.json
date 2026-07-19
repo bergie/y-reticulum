@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@digitaldefiance/bzip2-wasm": "^1.1.1",
+    "lib0": "^0.2.117",
     "reticulum-js": "^0.2.1",
     "y-protocols": "^1.0.7"
   },
