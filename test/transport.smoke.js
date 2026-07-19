@@ -24,9 +24,11 @@ import {
   Packet,
   PacketType,
   Reticulum,
+} from "reticulum-js";
+import {
   TCPClientInterface,
   TCPServerInterface,
-} from "reticulum-js";
+} from "reticulum-js/src/interfaces/tcp.js";
 import { roomDestinationName } from "../src/destination.js";
 
 const ROOM_NAME = "y-reticulum-transport-smoke";

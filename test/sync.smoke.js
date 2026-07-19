@@ -16,9 +16,11 @@ import test from "node:test";
 import {
   Identity,
   Reticulum,
+} from "reticulum-js";
+import {
   TCPClientInterface,
   TCPServerInterface,
-} from "reticulum-js";
+} from "reticulum-js/src/interfaces/tcp.js";
 import * as Y from "yjs";
 import { ReticulumProvider } from "../src/index.js";
 
