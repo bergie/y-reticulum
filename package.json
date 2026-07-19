@@ -1,0 +1,37 @@
+{
+  "name": "y-reticulum",
+  "version": "0.1.0",
+  "description": "Reticulum provider for Yjs",
+  "keywords": [
+    "reticulum",
+    "rns",
+    "yjs"
+  ],
+  "homepage": "https://github.com/bergie/y-reticulum#readme",
+  "bugs": {
+    "url": "https://github.com/bergie/y-reticulum/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/bergie/y-reticulum.git"
+  },
+  "license": "EUPL-1.2",
+  "author": "Henri Bergius <henri.bergius@iki.fi>",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "lint": "npx @biomejs/biome check --use-editorconfig=true src/",
+    "format": "npx @biomejs/biome check --use-editorconfig=true --write src/ test/ examples/",
+    "types": "npx tsc",
+    "test": "node --test --test-force-exit --test-timeout 5000 test/*.js test/**/*.js"
+  },
+  "dependencies": {
+    "@digitaldefiance/bzip2-wasm": "^1.1.1",
+    "reticulum-js": "^0.2.1",
+    "y-protocols": "^1.0.7"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "yjs": "^13.6.31"
+  }
+}
