@@ -18,7 +18,6 @@ Reticulum's transport and discovery primitives for WebRTC + signaling servers.
 - Acting as a Reticulum *transport* (routing) node. We are a leaf node, same as
   the rest of `reticulum-js`.
 - E2E encryption of the room beyond what Reticulum's Links already provide.
-  (y-webrtc's optional `password` key derivation is a future enhancement.)
 - A `BroadcastChannel` same-origin/tab shortcut. Reticulum is the single
   transport.
 
