@@ -1,21 +1,33 @@
 /**
  * @file provider.js
- * @description Reticulum provider for Yjs (public API surface).
+ * @description Reticulum provider for Yjs.
  *
- * Eventually this establishes a Reticulum destination per room, discovers peers
- * via the Announce mechanism, and synchronizes a {@link Y.Doc} and Awareness
- * over pairwise Links (see SPEC.md). This module currently holds the typed
- * public API; transport wiring lands in later phases.
+ * Wraps a {@link Y.Doc} and synchronizes it with peers discovered over the
+ * Reticulum mesh. Each provider owns (or borrows) a {@link Reticulum} instance
+ * and a {@link Room} that announces a destination derived from the room name
+ * and maintains pairwise Links to peers.
+ *
+ * Phase 2 (this file) implements the connection lifecycle and peer mesh:
+ * announcing, discovery and `peers` events. Yjs sync/awareness over those Links
+ * lands in Phase 3.
  */
-
 import { ObservableV2 } from "lib0/observable";
+import { Identity } from "reticulum-js";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as Y from "yjs";
+import { roomDestinationName } from "./destination.js";
+import { Room } from "./room.js";
 
 /**
  * Options accepted by {@link ReticulumProvider}.
  *
  * @typedef {Object} ProviderOptions
+ * @property {import("reticulum-js").Reticulum} reticulum
+ *   A configured Reticulum instance with at least one (default) interface
+ *   attached. The provider does not open interfaces itself.
+ * @property {import("reticulum-js").Identity} [identity]
+ *   Identity for this peer's room destination. Generated (non-persistent) if
+ *   omitted; supply your own to keep a stable address across restarts.
  * @property {awarenessProtocol.Awareness} [awareness]
  *   Reuse an existing Awareness instance. A fresh one is created when omitted.
  * @property {number} [maxConns]
@@ -46,41 +58,81 @@ export class ReticulumProvider extends ObservableV2 {
   /**
    * @param {string} roomName
    * @param {Y.Doc} doc
-   * @param {ProviderOptions} [opts]
+   * @param {ProviderOptions} opts
    */
-  constructor(roomName, doc, opts = {}) {
+  constructor(roomName, doc, opts) {
     super();
+    if (!opts || !opts.reticulum) {
+      throw new Error("ReticulumProvider requires a `reticulum` instance.");
+    }
     this.roomName = roomName;
     this.doc = doc;
+    this.reticulum = opts.reticulum;
     /** @type {awarenessProtocol.Awareness} */
     this.awareness = opts.awareness ?? new awarenessProtocol.Awareness(doc);
     this.maxConns = opts.maxConns ?? 20;
     this.announceIntervalMs = opts.announceIntervalMs ?? 30_000;
+
+    /** Resolved with the room destination's identity on connect(). */
+    this.identityPromise = opts.identity
+      ? Promise.resolve(opts.identity)
+      : Identity.generate();
+    /** @type {Identity|null} */
+    this.identity = opts.identity ?? null;
+
+    /** @type {Room|null} */
+    this.room = null;
     this.shouldConnect = false;
   }
 
   /**
-   * Whether the provider is attempting to connect to the mesh. Does not imply
+   * Whether the provider is announcing and accepting peer Links. Does not imply
    * that any peer is reachable; only that we are looking.
    *
    * @type {boolean}
    */
   get connected() {
-    return this.shouldConnect;
+    return this.room !== null && this.shouldConnect;
   }
 
-  /** Begin announcing and accepting peer Links. */
-  connect() {
+  /** Begin announcing and maintaining the peer mesh. */
+  async connect() {
+    if (this.shouldConnect) return;
     this.shouldConnect = true;
+    this.identity ??= await this.identityPromise;
+
+    const appName = await roomDestinationName(this.roomName);
+    this.room = new Room({
+      reticulum: this.reticulum,
+      identity: /** @type {Identity} */ (this.identity),
+      appName,
+      maxConns: this.maxConns,
+      announceIntervalMs: this.announceIntervalMs,
+      callbacks: {
+        onPeers: (
+          /** @type {string[]} */ added,
+          /** @type {string[]} */ removed,
+        ) => this.emit("peers", [{ added, removed }]),
+      },
+    });
+    await this.room.connect();
+    this.emit("status", [{ connected: true }]);
   }
 
-  /** Stop announcing and tear down peer Links. */
-  disconnect() {
+  /** Stop announcing, tear down all peer Links, and release the destination. */
+  async disconnect() {
+    if (!this.shouldConnect) return;
     this.shouldConnect = false;
+    if (this.room) {
+      await this.room.disconnect();
+      this.room = null;
+    }
+    this.emit("status", [{ connected: false }]);
   }
 
   /** Permanently release all resources. */
-  destroy() {
+  async destroy() {
+    await this.disconnect();
     super.destroy();
   }
 }
