@@ -6,28 +6,61 @@
  * carries no Yjs semantics of its own: the Room plugs the sync/awareness
  * protocol into the bytes that flow through here.
  *
- * Payloads up to the link MDU go as a single ContextType.NONE DATA packet;
- * anything larger is transported as a chunked, integrity-checked Reticulum
- * {@link Resource} (Phase 4) and reassembled before delivery, so an initial
- * doc state or a large update that would overflow a single packet still syncs.
+ * Small payloads travel as reliable {@link Channel} messages: the channel adds
+ * automatic retries, send-window flow control, and in-order / dedup'd delivery
+ * over the link, so a sync update or awareness change dropped on a lossy hop is
+ * retransmitted rather than lost. Payloads larger than the channel MDU (an
+ * initial doc state or a large update) cannot fit in a single channel message
+ * and are instead transported as a chunked, integrity-checked, bz2-compressed
+ * Reticulum {@link Resource}, reassembled before delivery.
  */
 import {
-  ContextType,
-  DestType,
-  Packet,
-  PacketType,
+  CEType,
+  ChannelException,
+  MessageBase,
   Resource,
   toHex,
 } from "reticulum-js";
 
 /**
+ * Application message type used on every y-reticulum {@link Channel}. Its body
+ * is a single raw Yjs wire frame (the y-webrtc tag + lib0 payload), carried
+ * verbatim — the channel envelope adds the framing Reticulum needs for
+ * reliability, ordering, and flow control, so nothing here touches the Yjs
+ * bytes.
+ *
+ * @extends {MessageBase}
+ */
+class YjsSyncMessage extends MessageBase {
+  /** Unique y-reticulum message type on the channel (< 0xf000). */
+  static MSGTYPE = 0x0001;
+
+  constructor() {
+    super();
+    /** @type {Uint8Array} */
+    this.data = new Uint8Array(0);
+  }
+
+  /** @returns {Uint8Array} */
+  pack() {
+    return this.data;
+  }
+
+  /** @param {Uint8Array} raw */
+  unpack(raw) {
+    this.data = raw;
+  }
+}
+
+/**
  * A peer-to-peer connection over a Reticulum Link.
  *
  * Exactly one PeerConn exists per established Link. `send` writes a raw byte
- * payload — as a single DATA packet when it fits the link MDU, else as a
- * Resource. Inbound payloads arrive via the link's `data` event (small) or
- * `resource` event (large) and are forwarded to the room. The peer id is the
- * hex link_id — identical on both ends of a link, so both peers agree on the id.
+ * payload — as a reliable Channel message when it fits the channel MDU, else as
+ * a compressed Resource. Inbound payloads arrive via the channel's message
+ * handler (small) or the link's `resource` event (large) and are forwarded to
+ * the room. The peer id is the hex link_id — identical on both ends of a link,
+ * so both peers agree on the id.
  */
 export class PeerConn {
   /**
@@ -49,6 +82,11 @@ export class PeerConn {
     this.remoteDestHash = remoteDestHash;
     /** @type {import("@digitaldefiance/bzip2-wasm").default | undefined} */
     this.bz2 = bz2 ?? undefined;
+    /** Reliable typed-message channel over the link (retries + flow control). */
+    this.channel = link.getChannel();
+    this.channel.registerMessageType(YjsSyncMessage);
+    this._onChannelMessage = this._onChannelMessage.bind(this);
+    this.channel.addMessageHandler(this._onChannelMessage);
     /** Hex link_id; used as the peer id (symmetric across both ends). */
     this.peerId = toHex(link.linkId);
     /** Whether the Yjs doc is synced with this peer. */
@@ -57,10 +95,6 @@ export class PeerConn {
     this._onData = onData;
     this._onClose = onClose;
 
-    // Small, single-packet payloads.
-    link.addEventListener("data", (/** @type {any} */ event) => {
-      this._onData(event.detail.packet.payload, this);
-    });
     // Large, chunked payloads: reassemble, then feed the same path.
     link.addEventListener("resource", (/** @type {any} */ event) => {
       const resource = event.detail.resource;
@@ -78,31 +112,67 @@ export class PeerConn {
   }
 
   /**
-   * Sends a raw byte payload to the peer. Small payloads go as a single DATA
-   * packet; payloads larger than the link MDU travel as a chunked Resource.
+   * Inbound Yjs channel message: forward the raw body to the room. Returns
+   * `true` to claim the message (no other handlers are registered).
+   * @param {import("reticulum-js").MessageBase} msg
+   * @returns {boolean}
+   */
+  _onChannelMessage(msg) {
+    if (!(msg instanceof YjsSyncMessage)) return false;
+    this._onData(msg.data, this);
+    return true;
+  }
+
+  /**
+   * Sends a raw byte payload to the peer. Small payloads go as a reliable
+   * Channel message (waiting for the send window if it is momentarily full);
+   * payloads larger than the channel MDU travel as a compressed Resource.
    * @param {Uint8Array} payload
    */
   async send(payload) {
     if (this.closed) return;
-    if (payload.length > this.link.mdu) {
+    if (payload.length > this.channel.mdu) {
       await this._sendResource(payload);
       return;
     }
-    await this.link.send(
-      new Packet({
-        packetType: PacketType.DATA,
-        destinationType: DestType.LINK,
-        destinationHash: this.link.linkId,
-        contextByte: ContextType.NONE,
-        payload,
-      }),
-    );
+    await this._sendChannel(payload);
   }
 
   /**
-   * Transfers `payload` as an uncompressed Reticulum Resource. Only the
-   * advertisement is awaited; the chunked transfer then proceeds on the link
-   * and the receiver reassembles it.
+   * Sends `payload` as a reliable Channel message. Waits while the send window
+   * is full (backpressure) and re-arms if the window fills between the readiness
+   * check and the serialized send — matching the library's buffer-layer loop.
+   * @param {Uint8Array} payload
+   */
+  async _sendChannel(payload) {
+    const message = new YjsSyncMessage();
+    message.data = payload;
+    for (;;) {
+      if (this.closed || this.channel._shutDown) return;
+      while (!this.channel.isReadyToSend()) {
+        if (this.closed || this.channel._shutDown) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      try {
+        await this.channel.send(message);
+        return;
+      } catch (err) {
+        if (
+          err instanceof ChannelException &&
+          err.type === CEType.ME_LINK_NOT_READY
+        ) {
+          continue; // window filled between the check and the serialized send
+        }
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * Transfers `payload` as a chunked Reticulum Resource, bz2-compressed when
+   * that shrinks it. Only the advertisement is awaited; the chunked transfer
+   * then proceeds on the link and the receiver reassembles (and decompresses)
+   * it before delivery.
    * @param {Uint8Array} payload
    */
   async _sendResource(payload) {

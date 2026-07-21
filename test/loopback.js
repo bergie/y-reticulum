@@ -5,9 +5,7 @@
  *   can build providers on them. Not a test file — just helpers.
  */
 import net from "node:net";
-import {
-  Reticulum,
-} from "reticulum-js";
+import { Reticulum } from "reticulum-js";
 import {
   TCPClientInterface,
   TCPServerInterface,

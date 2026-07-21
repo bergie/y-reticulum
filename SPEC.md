@@ -48,12 +48,17 @@ The message wire protocol (reused verbatim here):
 - **`Destination`** (IN/OUT, SINGLE/GROUP/PLAIN) + **`Announce`** for
   authenticated, signed peer discovery. Each peer's announce carries its public
   identity, which others recall to open Links.
-- **`Link`** — an ephemeral, encrypted, ordered, reliable channel between two
-  destinations, established via a `LINKREQUEST`/`LRPROOF` handshake. Strictly
-  stronger guarantees than a WebRTC data channel; ideal for Yjs sync.
+- **`Link`** — an ephemeral, encrypted channel between two destinations,
+  established via a `LINKREQUEST`/`LRPROOF` handshake. The base for everything
+  below.
+- **`Channel`** — a reliable, in-order, windowed typed-message layer over a
+  Link (`link.getChannel()`). Adds automatic retries (retransmit on a missing
+  proof), send-window flow control, and dedup — so a sync update or awareness
+  change dropped on a lossy hop is retransmitted rather than lost. Carries the
+  bulk of Yjs traffic.
 - **`Resource`** — chunked, hash-verified large-payload transport over a Link,
-  with automatic compression. Used for oversized sync payloads (initial state,
-  big `syncStep2`).
+  with automatic bz2 compression. Used for oversized sync payloads (initial
+  state, big `syncStep2`) that exceed the channel MDU.
 - **`request()`/`response()`** RPC built on Links — *not* used directly; we run
   our own framing so the message-type tag matches y-webrtc's semantics.
 
@@ -62,9 +67,9 @@ The message wire protocol (reused verbatim here):
 | y-webrtc | y-reticulum |
 |---|---|
 | Signaling server `announce`/`publish` | Reticulum `Announce` to a deterministic destination |
-| WebRTC data channel | `Link` |
-| Raw peer `.send(bytes)` | `Link` `data` event (inbound) + `ContextType.NONE` DATA packet (outbound) |
-| Large peer payloads (none) | `Resource` |
+| WebRTC data channel | `Link` + `Channel` |
+| Raw peer `.send(bytes)` | reliable `Channel` message (small) — `ContextType.CHANNEL` DATA packets with retries + send window |
+| Large peer payloads (none) | `Resource` (bz2-compressed) |
 | BroadcastChannel (same-origin) | not applicable |
 | `WebrtcProvider` (`ObservableV2`: `status`/`synced`/`peers`) | `ReticulumProvider` with the same events |
 | Message tags 0/1/3 | reused verbatim |
@@ -109,10 +114,12 @@ Identical framing to y-webrtc, minus tag `4`:
 - tag `1` awareness → `awarenessProtocol.encodeAwarenessUpdate` / `applyAwarenessUpdate`
 - tag `3` query awareness → reply with tag `1`
 
-Small messages go directly as a `ContextType.NONE` DATA packet on the Link.
-Messages exceeding a threshold (configurable, default ~ the link/interface MDU)
-are transported via a `Resource` and reassembled on the receiver before being
-handed to the same `readMessage` path.
+Small messages travel as reliable `Channel` messages (a `MessageBase` whose
+body is the raw y-webrtc frame), giving automatic retries, in-order delivery,
+and send-window flow control over the Link. Messages exceeding the channel MDU
+(link MDU minus the 6-byte channel envelope) cannot fit in a single channel
+message and are transported via a `Resource` (bz2-compressed), reassembled on
+the receiver before being handed to the same `readMessage` path.
 
 ## Public API (target)
 

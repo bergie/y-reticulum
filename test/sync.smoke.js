@@ -13,10 +13,7 @@
 import assert from "node:assert/strict";
 import net from "node:net";
 import test from "node:test";
-import {
-  Identity,
-  Reticulum,
-} from "reticulum-js";
+import { Identity, Reticulum } from "reticulum-js";
 import {
   TCPClientInterface,
   TCPServerInterface,
