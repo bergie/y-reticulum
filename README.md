@@ -24,12 +24,13 @@ npm i y-reticulum
 ## Usage
 
 Clients connected to the same room name share document updates. In addition to
-a `Y.Doc`, you pass a configured [reticulum-js](https://reticulum.js.org/)
+a `Y.Doc`, you pass a configured [@reticulum/core](https://reticulum.js.org/)
 instance — the provider does not open network interfaces itself.
 
 ```js
 import * as Y from "yjs"
-import { Identity, Reticulum, TCPClientInterface } from "reticulum-js"
+import { Identity, Reticulum } from "@reticulum/core"
+import { TCPClientInterface } from "@reticulum/node"
 import { ReticulumProvider } from "y-reticulum"
 
 // 1. Connect to the Reticulum mesh. Prefer the local shared instance (e.g. a

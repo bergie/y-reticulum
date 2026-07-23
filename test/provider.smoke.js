@@ -12,11 +12,8 @@
 import assert from "node:assert/strict";
 import net from "node:net";
 import test from "node:test";
-import { Identity, Reticulum } from "reticulum-js";
-import {
-  TCPClientInterface,
-  TCPServerInterface,
-} from "reticulum-js/src/interfaces/tcp.js";
+import { Identity, Reticulum } from "@reticulum/core";
+import { TCPClientInterface, TCPServerInterface } from "@reticulum/node";
 import * as Y from "yjs";
 import { ReticulumProvider } from "../src/index.js";
 

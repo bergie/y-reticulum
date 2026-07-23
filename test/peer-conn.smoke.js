@@ -14,7 +14,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Destination, DestType, Identity } from "reticulum-js";
+import { Destination, DestType, Identity } from "@reticulum/core";
 import {
   getCompressionProvider,
   PeerConn,
@@ -35,7 +35,7 @@ function bytesEqual(a, b) {
 /**
  * Resolves with the first validated announce on `rns` whose `nameHash` matches
  * `roomNameHash` (a peer in the same room).
- * @param {import("reticulum-js").Reticulum} rns
+ * @param {import("@reticulum/core").Reticulum} rns
  * @param {Uint8Array} roomNameHash
  * @returns {Promise<{ destinationHash: Uint8Array, identity: Identity }>}
  */

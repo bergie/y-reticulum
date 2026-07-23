@@ -12,8 +12,9 @@
  * "glare"), exactly one side initiates: the peer whose destination hash is
  * lexicographically smaller. The other simply accepts.
  */
+
+import { Destination, DestType, toHex } from "@reticulum/core";
 import * as encoding from "lib0/encoding";
-import { Destination, DestType, toHex } from "reticulum-js";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
 import * as Y from "yjs";
@@ -47,8 +48,8 @@ export class Room {
    * @param {object} options
    * @param {Y.Doc} options.doc
    * @param {awarenessProtocol.Awareness} options.awareness
-   * @param {import("reticulum-js").Reticulum} options.reticulum
-   * @param {import("reticulum-js").Identity} options.identity
+   * @param {import("@reticulum/core").Reticulum} options.reticulum
+   * @param {import("@reticulum/core").Identity} options.identity
    * @param {string} options.appName - Deterministic destination app-name for the room.
    * @param {number} options.maxConns
    * @param {number} options.announceIntervalMs
@@ -73,7 +74,7 @@ export class Room {
     this.announceIntervalMs = announceIntervalMs;
     this.callbacks = callbacks;
 
-    /** @type {import("reticulum-js").Destination|null} */
+    /** @type {import("@reticulum/core").Destination|null} */
     this.dest = null;
     /** Hex of this room destination's hash; set once connected. */
     this.myHex = "";
@@ -239,7 +240,7 @@ export class Room {
   /**
    * Registers a newly active peer and kicks off the Yjs sync handshake
    * (syncStep1 + local awareness), mirroring y-webrtc's peer-on-connect path.
-   * @param {import("reticulum-js").Link} link
+   * @param {import("@reticulum/core").Link} link
    * @param {Uint8Array|null} remoteDestHash
    */
   _registerPeer(link, remoteDestHash) {

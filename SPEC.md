@@ -169,7 +169,7 @@ conventions of both `y-webrtc` and `reticulum-js`.
 - Every function, method, and constructor gets `@param {Type} name` /
   `@returns {Type}` annotations; module-level `@typedef`s describe option objects
   and event payloads; `@import` (or `import` in `@type`) references types from
-  `yjs`, `y-protocols`, and `reticulum-js`.
+  `yjs`, `y-protocols`, and `@reticulum/core`.
 - `npm run types` (`tsc`) **must pass after every change** — this is enforced by
   `AGENTS.md`. Treat type errors as build failures, not warnings.
 - `lib0` types (`encoding.Encoder`, `decoding.Decoder`, `observable.ObservableV2`,

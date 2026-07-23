@@ -5,11 +5,8 @@
  *   can build providers on them. Not a test file — just helpers.
  */
 import net from "node:net";
-import { Reticulum } from "reticulum-js";
-import {
-  TCPClientInterface,
-  TCPServerInterface,
-} from "reticulum-js/src/interfaces/tcp.js";
+import { Reticulum } from "@reticulum/core";
+import { TCPClientInterface, TCPServerInterface } from "@reticulum/node";
 
 export const HOST = "127.0.0.1";
 

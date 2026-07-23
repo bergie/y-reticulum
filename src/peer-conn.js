@@ -20,7 +20,7 @@ import {
   MessageBase,
   Resource,
   toHex,
-} from "reticulum-js";
+} from "@reticulum/core";
 
 /**
  * Application message type used on every y-reticulum {@link Channel}. Its body
@@ -65,7 +65,7 @@ class YjsSyncMessage extends MessageBase {
 export class PeerConn {
   /**
    * @param {object} options
-   * @param {import("reticulum-js").Link} options.link
+   * @param {import("@reticulum/core").Link} options.link
    * @param {Uint8Array|null} options.remoteDestHash
    *   The peer's destination hash. Known on the initiator side (from the
    *   announce that triggered the link); `null` on the responder side.
@@ -114,7 +114,7 @@ export class PeerConn {
   /**
    * Inbound Yjs channel message: forward the raw body to the room. Returns
    * `true` to claim the message (no other handlers are registered).
-   * @param {import("reticulum-js").MessageBase} msg
+   * @param {import("@reticulum/core").MessageBase} msg
    * @returns {boolean}
    */
   _onChannelMessage(msg) {

@@ -11,8 +11,9 @@
  * announcing, discovery and `peers` events. Yjs sync/awareness over those Links
  * lands in Phase 3.
  */
+
+import { Identity } from "@reticulum/core";
 import { ObservableV2 } from "lib0/observable";
-import { Identity } from "reticulum-js";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as Y from "yjs";
 import { roomDestinationName } from "./destination.js";
@@ -22,10 +23,10 @@ import { Room } from "./room.js";
  * Options accepted by {@link ReticulumProvider}.
  *
  * @typedef {Object} ProviderOptions
- * @property {import("reticulum-js").Reticulum} reticulum
+ * @property {import("@reticulum/core").Reticulum} reticulum
  *   A configured Reticulum instance with at least one (default) interface
  *   attached. The provider does not open interfaces itself.
- * @property {import("reticulum-js").Identity} [identity]
+ * @property {import("@reticulum/core").Identity} [identity]
  *   Identity for this peer's room destination. Generated (non-persistent) if
  *   omitted; supply your own to keep a stable address across restarts.
  * @property {awarenessProtocol.Awareness} [awareness]

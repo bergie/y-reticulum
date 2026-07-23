@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Identity } from "reticulum-js";
+import { Identity } from "@reticulum/core";
 import * as Y from "yjs";
 import { ReticulumProvider } from "../src/index.js";
 import { makeLoopback, waitFor } from "./loopback.js";
