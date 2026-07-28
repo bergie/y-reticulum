@@ -22,6 +22,14 @@ import { getCompressionProvider } from "./compression.js";
 import { messageAwareness, messageSync, readMessage } from "./messages.js";
 import { PeerConn } from "./peer-conn.js";
 
+/**
+ * Delay after a peer Link drops before the initiator re-requests the peer's
+ * path, accelerating re-discovery beyond the periodic announce cadence. Small
+ * enough to beat the default announce interval, large enough to skip transient
+ * blips and to no-op if the peer comes back via the next announce first.
+ */
+const RECONNECT_PATH_REQUEST_DELAY_MS = 1500;
+
 /** Constant-time-ish equality for two equal-length byte arrays. */
 function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
   if (a.length !== b.length) return false;
@@ -90,6 +98,8 @@ export class Room {
     this.linkedDestHexes = new Set();
     /** Destination hashes with an in-flight createLink() (de-bounces announces). */
     this.pendingInitiates = new Set();
+    /** Destination hex → scheduled reconnect path-request timer (initiator side). */
+    this.pendingPathRequests = new Map();
 
     /** @type {ReturnType<typeof setInterval>|null} */
     this.announceTimer = null;
@@ -138,6 +148,8 @@ export class Room {
       clearInterval(this.announceTimer);
       this.announceTimer = null;
     }
+    for (const timer of this.pendingPathRequests.values()) clearTimeout(timer);
+    this.pendingPathRequests.clear();
     this.rns.transport.removeEventListener("announce", this._onAnnounce);
     this.dest?.removeEventListener("link_request", this._onLinkRequest);
     this.doc.off("update", this._docUpdateHandler);
@@ -259,10 +271,35 @@ export class Room {
   /** @param {PeerConn} peer */
   _onPeerClose(peer) {
     if (!this.peerConns.delete(peer.peerId)) return;
-    if (peer.remoteDestHash)
-      this.linkedDestHexes.delete(toHex(peer.remoteDestHash));
+    if (peer.remoteDestHash) {
+      const remoteHex = toHex(peer.remoteDestHash);
+      this.linkedDestHexes.delete(remoteHex);
+      // Initiator side only: the responder (remoteDestHash === null) must not
+      // re-initiate per the glare rule, so it has nothing to path-request.
+      this._scheduleReconnectPathRequest(remoteHex, peer.remoteDestHash);
+    }
     this.callbacks.onPeers([], [peer.peerId]);
     this._checkSynced();
+  }
+
+  /**
+   * Schedules a one-shot path request for a dropped peer so the mesh answers
+   * with a fresh path-response announce, beating the periodic announce
+   * cadence. Coalesces flaps to one in-flight request per peer and is a no-op
+   * if the peer already came back (via a normal announce) by the time it fires.
+   *
+   * @param {string} remoteHex
+   * @param {Uint8Array} remoteDestHash
+   */
+  _scheduleReconnectPathRequest(remoteHex, remoteDestHash) {
+    if (!this.connected || this.pendingPathRequests.has(remoteHex)) return;
+    const timer = setTimeout(() => {
+      this.pendingPathRequests.delete(remoteHex);
+      if (!this.connected || !this.dest) return;
+      if (this.linkedDestHexes.has(remoteHex)) return; // already re-linked
+      this.rns.transport.requestPath(remoteDestHash).catch(() => {});
+    }, RECONNECT_PATH_REQUEST_DELAY_MS);
+    this.pendingPathRequests.set(remoteHex, timer);
   }
 
   /**
@@ -348,9 +385,14 @@ export class Room {
     peer.send(bytes).catch(() => {});
   }
 
-  /** Recomputes room-level sync state and emits on change. */
+  /**
+   * Recomputes room-level sync state and emits on change. A room with no peers
+   * is *not* synced — an empty mesh carries no sync guarantee — so this flips
+   * back to `synced: false` when the last peer drops, rather than vacuously
+   * `true`.
+   */
   _checkSynced() {
-    let synced = true;
+    let synced = this.peerConns.size > 0;
     for (const peer of this.peerConns.values()) {
       if (!peer.synced) {
         synced = false;
