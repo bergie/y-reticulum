@@ -1,0 +1,14 @@
+.DS_Store
+.github/
+demo/
+demo-src/
+y-webrtc/
+docs/
+dist/
+AGENTS.md
+*.key
+*.tgz
+*.rsm
+*.d.ts
+tsconfig.json
+tsdown.config.js
