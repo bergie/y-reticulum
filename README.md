@@ -9,7 +9,7 @@ Propagates document updates over [Reticulum](https://reticulum.network/) mesh ne
   (retransmitted on lossy hops) for performant CRDT synchronization
 * Larger CRDT updates are automatically transported as bz2 compressed Resources
 
-Built on [reticulum-js](https://reticulum.js.org/) with aim to support both browsers and Node.js. For browsers, please read the [browser connectivity](https://reticulum.js.org/documents/Browser_Connectivity.html) notes.
+Built on [reticulum-js](https://reticulum.js.org/) with aim to support browsers, Node.js, and Deno. For browsers, please read the [browser connectivity](https://reticulum.js.org/documents/Browser_Connectivity.html) notes.
 
 ## Status
 
@@ -64,10 +64,6 @@ await provider.connect()
 
 const yarray = ydoc.getArray("array")
 ```
-
-> Running in a browser? See the reticulum-js
-> [browser connectivity](https://reticulum.js.org/documents/Browser_Connectivity.html)
-> notes for how to attach an interface.
 
 ## API
 
