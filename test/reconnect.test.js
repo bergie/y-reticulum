@@ -18,7 +18,7 @@ import test from "node:test";
 import { Identity } from "@reticulum/core";
 import * as Y from "yjs";
 import { ReticulumProvider } from "../src/index.js";
-import { makeLoopback, waitFor } from "./loopback.js";
+import { makeLoopback, nudgeAnnounce, waitFor } from "./loopback.js";
 
 const ROOM = "y-reticulum-reconnect-smoke";
 
@@ -40,15 +40,15 @@ test("a dropped Link is re-established and re-synced", {
   const providerA = new ReticulumProvider(ROOM, docA, {
     reticulum: rnsA,
     identity: await Identity.generate(),
-    // Re-announce slowly so the reconnect is driven by the path request, not
-    // the announce cadence — exercising that path. Initial discovery is still
-    // immediate (connect() announces once up front).
-    announceIntervalMs: 5000,
+    // Leave the announce cadence at the default (60 s floor, owned by
+    // @reticulum/core). Initial mesh-up is nudged explicitly below; the
+    // post-drop reconnect must therefore be driven by the scheduled path
+    // request (1.5 s), not the announce cadence — which is what this test
+    // exercises.
   });
   const providerB = new ReticulumProvider(ROOM, docB, {
     reticulum: rnsB,
     identity: await Identity.generate(),
-    announceIntervalMs: 5000,
   });
 
   /** @type {boolean[]} */ const syncedA = [];
@@ -71,6 +71,9 @@ test("a dropped Link is re-established and re-synced", {
 
   await providerA.connect();
   await providerB.connect();
+  // Nudge initial discovery (the periodic cadence is ≥60 s); the post-drop
+  // reconnect below is then driven by the scheduled path request.
+  await nudgeAnnounce(providerA, providerB);
 
   // --- Initial mesh: each discovers exactly one peer and syncs -----------
   await waitFor(() => aAdded.length >= 1 && bAdded.length >= 1, 10000);

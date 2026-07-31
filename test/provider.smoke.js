@@ -16,6 +16,7 @@ import { Identity, Reticulum } from "@reticulum/core";
 import { TCPClientInterface, TCPServerInterface } from "@reticulum/node";
 import * as Y from "yjs";
 import { ReticulumProvider } from "../src/index.js";
+import { nudgeAnnounce } from "./loopback.js";
 
 const ROOM = "y-reticulum-provider-smoke";
 const HOST = "127.0.0.1";
@@ -96,12 +97,10 @@ test("two providers discover each other and form a single Link", {
   const providerA = new ReticulumProvider(ROOM, new Y.Doc(), {
     reticulum: rnsA,
     identity: idA,
-    announceIntervalMs: 500,
   });
   const providerB = new ReticulumProvider(ROOM, new Y.Doc(), {
     reticulum: rnsB,
     identity: idB,
-    announceIntervalMs: 500,
   });
 
   /** @type {string[]} */
@@ -121,6 +120,10 @@ test("two providers discover each other and form a single Link", {
 
   await providerA.connect();
   await providerB.connect();
+
+  // The periodic re-announce cadence is now @reticulum/core's job (and clamped
+  // to ≥60 s), so nudge one explicit announce per side to mesh up fast.
+  await nudgeAnnounce(providerA, providerB);
 
   // Both should connect, discover exactly one peer, and hold one Link.
   await waitFor(() => aPeers.length >= 1 && bPeers.length >= 1, 10000);

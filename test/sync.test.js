@@ -17,6 +17,7 @@ import { Identity, Reticulum } from "@reticulum/core";
 import { TCPClientInterface, TCPServerInterface } from "@reticulum/node";
 import * as Y from "yjs";
 import { ReticulumProvider } from "../src/index.js";
+import { nudgeAnnounce } from "./loopback.js";
 
 const ROOM = "y-reticulum-sync-smoke";
 const HOST = "127.0.0.1";
@@ -90,12 +91,10 @@ test("Doc and awareness sync between two providers", {
   const providerA = new ReticulumProvider(ROOM, docA, {
     reticulum: rnsA,
     identity: idA,
-    announceIntervalMs: 500,
   });
   const providerB = new ReticulumProvider(ROOM, docB, {
     reticulum: rnsB,
     identity: idB,
-    announceIntervalMs: 500,
   });
 
   /** @type {boolean} */ let aSynced = false;
@@ -109,6 +108,10 @@ test("Doc and awareness sync between two providers", {
 
   await providerA.connect();
   await providerB.connect();
+
+  // The periodic re-announce cadence is now @reticulum/core's job (and clamped
+  // to ≥60 s), so nudge one explicit announce per side to mesh up fast.
+  await nudgeAnnounce(providerA, providerB);
 
   // Both sides complete the syncStep1/2 handshake.
   await waitFor(() => aSynced && bSynced, 10000);

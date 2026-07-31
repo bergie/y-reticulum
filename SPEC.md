@@ -219,8 +219,11 @@ conventions of both `y-webrtc` and `reticulum-js`.
 
 ## Open questions
 
-- Default announce cadence and whether to send a path request up front to
-  accelerate first-peer discovery on a fresh mesh.
+- Default announce cadence: now delegated to `@reticulum/core`'s
+  `Destination.startAnnouncing`, which enforces the §9.7 60 s floor; y-reticulum
+  defaults to that floor and forwards any user override (clamped). Open:
+  whether to send a path request up front to accelerate first-peer discovery
+  on a fresh mesh.
 - Whether/how to expose the configured Reticulum interfaces (auto vs. explicit
   TCP/WebSocket) or always prefer `connectToSharedInstance()` with a fallback.
 - `maxConns` semantics: do we cap total Links, or per-room Links?

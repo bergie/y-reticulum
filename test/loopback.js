@@ -78,3 +78,23 @@ export function waitFor(cond, timeoutMs) {
     tick();
   });
 }
+
+/**
+ * Triggers one immediate re-announce from each provider's room destination.
+ *
+ * The periodic re-announce cadence is owned by @reticulum/core and clamped to
+ * the §9.7 60 s floor, so smoketests can't lean on a sub-minute tick for
+ * mutual discovery. Firing one explicit announce from each side once everyone
+ * is connected makes mesh-up fast and deterministic — covering the
+ * hash-ordering case where the second-connecting peer missed the first's
+ * immediate announce (its listener wasn't registered yet) and would otherwise
+ * have to wait for the next periodic tick.
+ *
+ * @param {...import("../src/provider.js").ReticulumProvider} providers
+ * @returns {Promise<void>}
+ */
+export async function nudgeAnnounce(...providers) {
+  for (const p of providers) {
+    await p.room?.dest?.announce();
+  }
+}

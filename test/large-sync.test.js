@@ -15,7 +15,7 @@ import test from "node:test";
 import { Identity } from "@reticulum/core";
 import * as Y from "yjs";
 import { ReticulumProvider } from "../src/index.js";
-import { makeLoopback, waitFor } from "./loopback.js";
+import { makeLoopback, nudgeAnnounce, waitFor } from "./loopback.js";
 
 const ROOM = "y-reticulum-large-sync-smoke";
 // Comfortably larger than the default link MDU (~431 B).
@@ -39,12 +39,10 @@ test("an initial state larger than the link MDU syncs via a Resource", {
   const providerA = new ReticulumProvider(ROOM, docA, {
     reticulum: rnsA,
     identity: await Identity.generate(),
-    announceIntervalMs: 500,
   });
   const providerB = new ReticulumProvider(ROOM, docB, {
     reticulum: rnsB,
     identity: await Identity.generate(),
-    announceIntervalMs: 500,
   });
 
   /** @type {boolean} */ let bSynced = false;
@@ -54,6 +52,9 @@ test("an initial state larger than the link MDU syncs via a Resource", {
 
   await providerA.connect();
   await providerB.connect();
+  // The periodic re-announce cadence is now @reticulum/core's job (and clamped
+  // to ≥60 s), so nudge one explicit announce per side to mesh up fast.
+  await nudgeAnnounce(providerA, providerB);
 
   // B becomes synced exactly when it receives + applies A's large step2.
   await waitFor(() => bSynced, 10000);

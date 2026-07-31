@@ -101,9 +101,6 @@ export class Room {
     /** Destination hex → scheduled reconnect path-request timer (initiator side). */
     this.pendingPathRequests = new Map();
 
-    /** @type {ReturnType<typeof setInterval>|null} */
-    this.announceTimer = null;
-
     this._onAnnounce = this._onAnnounce.bind(this);
     this._onLinkRequest = this._onLinkRequest.bind(this);
     this._docUpdateHandler = this._docUpdateHandler.bind(this);
@@ -131,10 +128,12 @@ export class Room {
     this.doc.on("update", this._docUpdateHandler);
     this.awareness.on("update", this._awarenessUpdateHandler);
 
-    await this.dest.announce();
-    this.announceTimer = setInterval(() => {
-      this.dest?.announce().catch(() => {});
-    }, this.announceIntervalMs);
+    // Delegate the periodic re-announce loop — and its §9.7 60 s floor — to
+    // @reticulum/core. startAnnouncing() fires the first announce immediately
+    // (so the destination is reachable as soon as connect() returns), then
+    // repeats at the interval to keep cached mesh paths fresh against
+    // transit-relay TTLs.
+    this.dest.startAnnouncing({ intervalMs: this.announceIntervalMs });
 
     this.connected = true;
   }
@@ -144,10 +143,7 @@ export class Room {
     if (!this.connected) return;
     this.connected = false;
 
-    if (this.announceTimer) {
-      clearInterval(this.announceTimer);
-      this.announceTimer = null;
-    }
+    this.dest?.stopAnnouncing();
     for (const timer of this.pendingPathRequests.values()) clearTimeout(timer);
     this.pendingPathRequests.clear();
     this.rns.transport.removeEventListener("announce", this._onAnnounce);

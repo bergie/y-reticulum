@@ -86,7 +86,10 @@ new ReticulumProvider(roomName, ydoc[, opts])
   // Upper bound on simultaneous peer Links. Mirrors y-webrtc's `maxConns`.
   maxConns: 20,
   // Cadence (ms) at which the room destination is re-announced for discovery.
-  announceIntervalMs: 30_000,
+  // Delegated to @reticulum/core's Destination.startAnnouncing, which clamps
+  // to the 60s floor from the Reticulum spec (sub-minute intervals trigger
+  // ingress rate limiting).
+  announceIntervalMs: 60_000,
 }
 ```
 

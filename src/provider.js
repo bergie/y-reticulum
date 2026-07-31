@@ -35,6 +35,8 @@ import { Room } from "./room.js";
  *   Upper bound on simultaneous peer Links. Mirrors y-webrtc's `maxConns`.
  * @property {number} [announceIntervalMs]
  *   Cadence (ms) at which the room destination is re-announced for discovery.
+ *   Forwarded to `Destination.startAnnouncing`, which clamps it to the
+ *   §9.7 60 s floor (sub-minute intervals trigger ingress rate limiting).
  */
 
 /**
@@ -72,7 +74,7 @@ export class ReticulumProvider extends ObservableV2 {
     /** @type {awarenessProtocol.Awareness} */
     this.awareness = opts.awareness ?? new awarenessProtocol.Awareness(doc);
     this.maxConns = opts.maxConns ?? 20;
-    this.announceIntervalMs = opts.announceIntervalMs ?? 30_000;
+    this.announceIntervalMs = opts.announceIntervalMs ?? 60_000;
 
     /** Resolved with the room destination's identity on connect(). */
     this.identityPromise = opts.identity
