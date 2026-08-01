@@ -1,4 +1,5 @@
 .DS_Store
+.editorconfig
 .github/
 demo/
 demo-src/
@@ -12,3 +13,5 @@ AGENTS.md
 *.d.ts
 tsconfig.json
 tsdown.config.js
+bun.lock
+deno.lock
