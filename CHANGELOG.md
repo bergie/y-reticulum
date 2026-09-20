@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-21
+
 ### Changed
 
 - Updated `@reticulum/core` and `@reticulum/node` to `^0.8.2`
