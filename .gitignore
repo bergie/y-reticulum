@@ -7,3 +7,4 @@ dist/
 *.tgz
 *.rsm
 *.d.ts
+demo/

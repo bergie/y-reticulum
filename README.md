@@ -90,6 +90,15 @@ new ReticulumProvider(roomName, ydoc[, opts])
   // to the 60s floor from the Reticulum spec (sub-minute intervals trigger
   // ingress rate limiting).
   announceIntervalMs: 60_000,
+  // Optional access control. When set, peer links must prove their identity
+  // (the initiator runs the signed identify handshake over the link) and pass
+  // the policy before any room traffic flows. Refused links are torn down and
+  // reported via the `refused` event. See "Access control" below.
+  linkPolicy: ({ remoteIdentityHash, remoteDestinationHash, initiator }) =>
+    allowed.has(remoteIdentityHash),
+  // How long the responder waits for the initiator's identify handshake
+  // before refusing the link. Only relevant with a `linkPolicy`.
+  identifyTimeoutMs: 10_000,
 }
 ```
 
@@ -100,6 +109,41 @@ The provider extends `ObservableV2` and emits:
 | `status` | `{ connected: boolean }` | the provider (dis)connects from the mesh |
 | `synced` | `{ synced: boolean }` | sync state with the peer mesh changes |
 | `peers` | `{ added: string[], removed: string[] }` | peers are discovered or drop off |
+| `refused` | `{ refusals: Array<{ destinationHash: string \| null, identityHash: string \| null, initiator: boolean }> }` | a peer link was refused by the link policy |
+
+## Access control
+
+Pass a `linkPolicy` to gate which peers may sync with your room. The policy is
+a (possibly async) callback that receives the remote peer's
+`remoteIdentityHash` (hex truncated hash of their long-term Reticulum
+identity), their room `remoteDestinationHash` when known (initiator side;
+`null` on the responder side, where it is only learnt after identify), and
+`initiator` telling which side of the link you are. Return `true` to allow the
+link, `false` to refuse it: refused links are torn down before any room traffic flows, and reported on the `refused` event.
+
+The identity hash is cryptographically bound on both sides: on the initiator
+side it comes from the peer's signed announce, on the responder side from the
+signed identify handshake over the link. Peers that never identify (e.g. older
+versions without ACL support) are refused after `identifyTimeoutMs` and
+reported with a `null` identityHash.
+
+Refusals make natural access requests: collect them and, when a user grants
+access, add the peer's identity hash to your allow-list. The next announce
+cycle connects the peers.
+
+```js
+const granted = new Set([myIdentityHash])
+const provider = new ReticulumProvider("your-room-name", ydoc, {
+  reticulum: rns,
+  identity,
+  linkPolicy: ({ remoteIdentityHash }) => granted.has(remoteIdentityHash),
+})
+provider.on("refused", ({ refusals }) => {
+  for (const { identityHash } of refusals) {
+    console.log("access request from", identityHash) // surface in your UI
+  }
+})
+```
 
 ## License
 

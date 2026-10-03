@@ -13,7 +13,7 @@
  * lexicographically smaller. The other simply accepts.
  */
 
-import { Destination, DestType, toHex } from "@reticulum/core";
+import { Destination, DestType, Identity, toHex } from "@reticulum/core";
 import * as encoding from "lib0/encoding";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
@@ -39,11 +39,35 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
 }
 
 /**
+ * Context handed to a room's {@link LinkPolicy} for every inbound and
+ * outbound peer link.
+ *
+ * @typedef {Object} LinkPolicyContext
+ * @property {string} remoteIdentityHash Hex truncated hash of the remote
+ *   peer's long-term identity. Cryptographically bound: on the initiator
+ *   side it comes from the peer's announce, on the responder side from the
+ *   signed identify handshake over the link.
+ * @property {string|null} remoteDestinationHash Hex destination hash of the
+ *   remote room destination, when known (initiator side).
+ * @property {boolean} initiator Whether this side initiated the link.
+ */
+
+/**
+ * Decides whether a peer link may carry room traffic. Called on both the
+ * initiator and responder sides once the remote identity is proven.
+ *
+ * @typedef {(context: LinkPolicyContext) => boolean | Promise<boolean>} LinkPolicy
+ */
+
+/**
  * @typedef {Object} RoomCallbacks
  * @property {(added: string[], removed: string[]) => void} onPeers
  *   Fired whenever peers are discovered or drop off. Ids are hex link_ids.
  * @property {(synced: boolean) => void} onSynced
  *   Fired when the room's overall sync state changes.
+ * @property {(refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean }>) => void} [onRefused]
+ *   Fired when a peer link was refused by the link policy. Apps can use this
+ *   to surface access requests (e.g. "peer X wants to join").
  */
 
 /**
@@ -61,6 +85,11 @@ export class Room {
    * @param {string} options.appName - Deterministic destination app-name for the room.
    * @param {number} options.maxConns
    * @param {number} options.announceIntervalMs
+   * @param {LinkPolicy | null} [options.linkPolicy] When set, peer links must prove
+   *   their identity (initiator runs the identify handshake) and pass the
+   *   policy before any room traffic flows; refused links are torn down.
+   * @param {number} [options.identifyTimeoutMs] How long the responder waits
+   *   for the initiator's identify handshake before refusing.
    * @param {RoomCallbacks} options.callbacks
    */
   constructor({
@@ -71,6 +100,8 @@ export class Room {
     appName,
     maxConns,
     announceIntervalMs,
+    linkPolicy,
+    identifyTimeoutMs = 10_000,
     callbacks,
   }) {
     this.doc = doc;
@@ -80,6 +111,8 @@ export class Room {
     this.appName = appName;
     this.maxConns = maxConns;
     this.announceIntervalMs = announceIntervalMs;
+    this.linkPolicy = linkPolicy ?? null;
+    this.identifyTimeoutMs = identifyTimeoutMs;
     this.callbacks = callbacks;
 
     /** @type {import("@reticulum/core").Destination|null} */
@@ -202,7 +235,34 @@ export class Room {
     // Glare avoidance: only the lexicographically smaller destination initiates.
     if (this.myHex > remoteHex) return;
 
+    // De-bounce before the policy runs: announces repeat, and a slow (e.g.
+    // interactive) policy must not let concurrent announces each open a Link.
     this.pendingInitiates.add(remoteHex);
+
+    // Link policy (initiator side): the announce cryptographically binds the
+    // remote identity, so the policy can run before any link is opened.
+    if (this.linkPolicy) {
+      const initiatorIdentityHash = toHex(
+        await Identity.truncatedHash(detail.identity.publicKey),
+      );
+      const allowed = await this.linkPolicy({
+        remoteIdentityHash: initiatorIdentityHash,
+        remoteDestinationHash: remoteHex,
+        initiator: true,
+      });
+      if (!allowed) {
+        this.pendingInitiates.delete(remoteHex);
+        this.callbacks.onRefused?.([
+          {
+            destinationHash: remoteHex,
+            identityHash: initiatorIdentityHash,
+            initiator: true,
+          },
+        ]);
+        return;
+      }
+    }
+
     try {
       const out = await Destination.OUT(
         this.appName,
@@ -215,6 +275,11 @@ export class Room {
         await link.teardown();
         return;
       }
+      // With a policy, prove our identity to the responder before any room
+      // traffic: their policy cannot evaluate us until we do
+      if (this.linkPolicy) {
+        await link.identify(this.identity);
+      }
       this.linkedDestHexes.add(remoteHex);
       this._registerPeer(link, detail.destinationHash);
     } catch {
@@ -226,7 +291,9 @@ export class Room {
   }
 
   /**
-   * Responder path: a peer is opening a Link to us. Accept it.
+   * Responder path: a peer is opening a Link to us. Accept it. With a link
+   * policy, the peer must prove its identity over the link (signed identify
+   * handshake) before the policy decides and any room traffic flows.
    * @param {Event} event
    */
   async _onLinkRequest(event) {
@@ -239,10 +306,56 @@ export class Room {
         await link.teardown();
         return;
       }
+      if (this.linkPolicy) {
+        const identityHash = await this._awaitIdentify(link);
+        if (!identityHash) {
+          // The peer never proved who they are: refuse without ceremony
+          await link.teardown();
+          this.callbacks.onRefused?.([
+            { destinationHash: null, identityHash: null, initiator: false },
+          ]);
+          return;
+        }
+        const allowed = await this.linkPolicy({
+          remoteIdentityHash: identityHash,
+          remoteDestinationHash: null,
+          initiator: false,
+        });
+        if (!allowed) {
+          await link.teardown();
+          this.callbacks.onRefused?.([
+            { destinationHash: null, identityHash, initiator: false },
+          ]);
+          return;
+        }
+      }
       this._registerPeer(link, null);
     } catch {
       // Handshake failed; nothing to clean up.
     }
+  }
+
+  /**
+   * Waits for the initiator's signed identify handshake on this link.
+   *
+   * @param {import("@reticulum/core").Link} link
+   * @returns {Promise<string|null>} Hex remote identity hash, or null when
+   *   the peer did not identify within the timeout.
+   */
+  _awaitIdentify(link) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        link.removeEventListener("identify", onIdentify);
+        resolve(null);
+      }, this.identifyTimeoutMs);
+      const onIdentify = (/** @type {Event} */ event) => {
+        clearTimeout(timer);
+        const detail = /** @type {any} */ (event).detail;
+        const identity = detail?.identity;
+        resolve(identity ? toHex(identity.getSalt()) : null);
+      };
+      link.addEventListener("identify", onIdentify, { once: true });
+    });
   }
 
   /**

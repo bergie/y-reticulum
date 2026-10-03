@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional `linkPolicy` provider option: an application-supplied callback that decides whether a peer link may carry room traffic, evaluated on both the initiator and responder sides once the remote identity is cryptographically proven (via the signed announce on the initiator side, via the signed `LINKIDENTIFY` handshake on the responder side)
+- Optional `identifyTimeoutMs` provider option: how long the responder waits for the initiator's identify handshake before refusing the link (default 10 s)
+- `refused` provider event, fired when a peer link was refused by the link policy, so apps can surface access requests ("peer X wants to join")
+- Browser demo build (`tsdown.config.js`, `demo-src/`)
+
 ## [0.1.3] - 2026-09-21
 
 ## [0.1.2] - 2026-09-21

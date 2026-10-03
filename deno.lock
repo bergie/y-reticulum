@@ -1,0 +1,65 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:@digitaldefiance/bzip2-wasm@^1.1.1": "1.1.1",
+    "npm:lib0@~0.2.117": "0.2.117",
+    "npm:typescript@^6.0.3": "6.0.3",
+    "npm:y-protocols@^1.0.7": "1.0.7_yjs@13.6.31",
+    "npm:yjs@^13.6.31": "13.6.31"
+  },
+  "npm": {
+    "@digitaldefiance/bzip2-wasm@1.1.1": {
+      "integrity": "sha512-RG3lUJ04h1c3rPsNxYz6Q4+fwDk3E1cD0rMhdqEJb7JMIC3uXlgJz4UqYMfmB6xx/XEDQvt9nD7FhEVE/1mZ8A=="
+    },
+    "@reticulum/core@0.4.0": {
+      "integrity": "sha512-FT/YRpgyC98KUVudC6TrMG6UGif6BJAHg1Fs6vBkQL9v4yNNXygHQ1yNsof2Jbom7eoJ1+eeDEhOk3vol8paMg=="
+    },
+    "@reticulum/node@0.4.0": {
+      "integrity": "sha512-7eaiTLxaQ0wyLZzB4xj6k8xuzDMKUyDfJQmmtqPOJ+L44ZNWOusNkqVMLAWeZJLxeArm9vW1YxV7HRAOUyR2sw==",
+      "dependencies": [
+        "@reticulum/core"
+      ]
+    },
+    "isomorphic.js@0.2.5": {
+      "integrity": "sha512-PIeMbHqMt4DnUP3MA/Flc0HElYjMXArsw1qwJZcm9sqR8mq3l8NYizFMty0pWwE/tzIGH3EKK5+jes5mAr85yw=="
+    },
+    "lib0@0.2.117": {
+      "integrity": "sha512-DeXj9X5xDCjgKLU/7RR+/HQEVzuuEUiwldwOGsHK/sfAfELGWEyTcf0x+uOvCvK3O2zPmZePXWL85vtia6GyZw==",
+      "dependencies": [
+        "isomorphic.js"
+      ],
+      "bin": true
+    },
+    "typescript@6.0.3": {
+      "integrity": "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==",
+      "bin": true
+    },
+    "y-protocols@1.0.7_yjs@13.6.31": {
+      "integrity": "sha512-YSVsLoXxO67J6eE/nV4AtFtT3QEotZf5sK5BHxFBXso7VDUT3Tx07IfA6hsu5Q5OmBdMkQVmFZ9QOA7fikWvnw==",
+      "dependencies": [
+        "lib0",
+        "yjs"
+      ]
+    },
+    "yjs@13.6.31": {
+      "integrity": "sha512-Eq+5BRfbeGyqGVrTJL3bEcr8gKkxPuyuoHmAwpk52fDb8kOVMrfVSTRPd6yiGgX5Fskb96qCRjzjbRjrL4YEnw==",
+      "dependencies": [
+        "lib0"
+      ]
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@digitaldefiance/bzip2-wasm@^1.1.1",
+        "npm:@reticulum/core@0.9",
+        "npm:@reticulum/node@0.9",
+        "npm:@types/node@^26.1.2",
+        "npm:lib0@~0.2.117",
+        "npm:typescript@^6.0.3",
+        "npm:y-protocols@^1.0.7",
+        "npm:yjs@^13.6.31"
+      ]
+    }
+  }
+}

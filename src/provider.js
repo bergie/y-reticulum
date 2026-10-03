@@ -37,6 +37,14 @@ import { Room } from "./room.js";
  *   Cadence (ms) at which the room destination is re-announced for discovery.
  *   Forwarded to `Destination.startAnnouncing`, which clamps it to the
  *   §9.7 60 s floor (sub-minute intervals trigger ingress rate limiting).
+ * @property {import("./room.js").LinkPolicy} [linkPolicy]
+ *   When set, peer links must prove their identity (the initiator runs the
+ *   signed identify handshake over the link) and pass the policy before any
+ *   room traffic flows. Refused links are torn down and reported via the
+ *   `refused` event, which apps can use to surface access requests.
+ * @property {number} [identifyTimeoutMs]
+ *   How long the responder waits for the initiator's identify handshake
+ *   before refusing the link.
  */
 
 /**
@@ -50,6 +58,8 @@ import { Room } from "./room.js";
  *   Fired when sync state with the peer mesh changes. (Phase 3.)
  * @property {(event: { added: Array<string>, removed: Array<string> }) => void} peers
  *   Fired when peers are discovered or drop off.
+ * @property {(event: { refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean }> }) => void} refused
+ *   Fired when a peer link was refused by the link policy.
  */
 
 /**
@@ -75,6 +85,8 @@ export class ReticulumProvider extends ObservableV2 {
     this.awareness = opts.awareness ?? new awarenessProtocol.Awareness(doc);
     this.maxConns = opts.maxConns ?? 20;
     this.announceIntervalMs = opts.announceIntervalMs ?? 60_000;
+    this.linkPolicy = opts.linkPolicy ?? null;
+    this.identifyTimeoutMs = opts.identifyTimeoutMs ?? 10_000;
 
     /** Resolved with the room destination's identity on connect(). */
     this.identityPromise = opts.identity
@@ -113,6 +125,8 @@ export class ReticulumProvider extends ObservableV2 {
       appName,
       maxConns: this.maxConns,
       announceIntervalMs: this.announceIntervalMs,
+      linkPolicy: this.linkPolicy,
+      identifyTimeoutMs: this.identifyTimeoutMs,
       callbacks: {
         onPeers: (
           /** @type {string[]} */ added,
@@ -120,6 +134,8 @@ export class ReticulumProvider extends ObservableV2 {
         ) => this.emit("peers", [{ added, removed }]),
         onSynced: (/** @type {boolean} */ synced) =>
           this.emit("synced", [{ synced }]),
+        onRefused: (/** @type {any[]} */ refusals) =>
+          this.emit("refused", [{ refusals }]),
       },
     });
     await this.room.connect();
