@@ -20,7 +20,7 @@ import * as syncProtocol from "y-protocols/sync";
 import * as Y from "yjs";
 import { getCompressionProvider } from "./compression.js";
 import { messageAwareness, messageSync, readMessage } from "./messages.js";
-import { PeerConn } from "./peer-conn.js";
+import { PeerConn, YjsSyncMessage } from "./peer-conn.js";
 
 /**
  * Delay after a peer Link drops before the initiator re-requests the peer's
@@ -133,6 +133,9 @@ export class Room {
     this.pendingInitiates = new Set();
     /** Destination hex → scheduled reconnect path-request timer (initiator side). */
     this.pendingPathRequests = new Map();
+    /** Link → payloads stashed before the peer's PeerConn existed (see
+     * {@link Room._primeChannel}). */
+    this._primedChannels = new Map();
 
     this._onAnnounce = this._onAnnounce.bind(this);
     this._onLinkRequest = this._onLinkRequest.bind(this);
@@ -263,6 +266,7 @@ export class Room {
       }
     }
 
+    let link = /** @type {import("@reticulum/core").Link|null} */ (null);
     try {
       const out = await Destination.OUT(
         this.appName,
@@ -270,11 +274,15 @@ export class Room {
         detail.identity,
         this.rns,
       );
-      const link = await out.createLink();
+      link = await out.createLink();
       if (!this.connected) {
         await link.teardown();
         return;
       }
+      // Register the Yjs message type (and stash early inbound traffic)
+      // before any await: the responder may start its Yjs sync handshake
+      // while we are still identifying.
+      this._primeChannel(link);
       // With a policy, prove our identity to the responder before any room
       // traffic: their policy cannot evaluate us until we do
       if (this.linkPolicy) {
@@ -285,6 +293,7 @@ export class Room {
     } catch {
       // Peer vanished mid-handshake, transport error, etc. — the announce loop
       // will retry on the next announce if the peer is still around.
+      if (link) this._unprimeChannel(link);
     } finally {
       this.pendingInitiates.delete(remoteHex);
     }
@@ -300,16 +309,22 @@ export class Room {
     if (!this.connected || !this.dest) return;
     if (this.peerConns.size >= this.maxConns) return;
     const packet = /** @type {any} */ (event).detail.packet;
+    let link = /** @type {import("@reticulum/core").Link|null} */ (null);
     try {
-      const link = await this.dest.acceptLink(packet);
+      link = await this.dest.acceptLink(packet);
       if (!this.connected) {
         await link.teardown();
         return;
       }
+      // Register the Yjs message type (and stash early inbound traffic)
+      // before any await: the initiator may already be sending its Yjs sync
+      // handshake while we identify / run the link policy.
+      this._primeChannel(link);
       if (this.linkPolicy) {
         const identityHash = await this._awaitIdentify(link);
         if (!identityHash) {
           // The peer never proved who they are: refuse without ceremony
+          this._unprimeChannel(link);
           await link.teardown();
           this.callbacks.onRefused?.([
             { destinationHash: null, identityHash: null, initiator: false },
@@ -322,6 +337,7 @@ export class Room {
           initiator: false,
         });
         if (!allowed) {
+          this._unprimeChannel(link);
           await link.teardown();
           this.callbacks.onRefused?.([
             { destinationHash: null, identityHash, initiator: false },
@@ -332,6 +348,7 @@ export class Room {
       this._registerPeer(link, null);
     } catch {
       // Handshake failed; nothing to clean up.
+      if (link) this._unprimeChannel(link);
     }
   }
 
@@ -359,12 +376,47 @@ export class Room {
   }
 
   /**
+   * Registers `YjsSyncMessage` on the link's channel and stashes any inbound
+   * payloads that arrive before the {@link PeerConn} exists. Without this, a
+   * payload arriving during the identify / link-policy await is dropped by the
+   * channel with `Unable to find constructor for Channel MSGTYPE 0x1`.
+   * @param {import("@reticulum/core").Link} link
+   */
+  _primeChannel(link) {
+    const channel = link.getChannel();
+    channel.registerMessageType(YjsSyncMessage);
+    const payloads = /** @type {Uint8Array[]} */ ([]);
+    const stash = (/** @type {any} */ msg) => {
+      if (!(msg instanceof YjsSyncMessage)) return false;
+      payloads.push(msg.data);
+      return true;
+    };
+    channel.addMessageHandler(stash);
+    this._primedChannels.set(link, { payloads, stash });
+  }
+
+  /**
+   * Removes the stash handler installed by {@link Room._primeChannel} and
+   * returns the payloads received before the PeerConn took over the channel.
+   * @param {import("@reticulum/core").Link} link
+   * @returns {Uint8Array[]}
+   */
+  _unprimeChannel(link) {
+    const primed = this._primedChannels.get(link);
+    if (!primed) return [];
+    this._primedChannels.delete(link);
+    link.getChannel().removeMessageHandler(primed.stash);
+    return primed.payloads;
+  }
+
+  /**
    * Registers a newly active peer and kicks off the Yjs sync handshake
    * (syncStep1 + local awareness), mirroring y-webrtc's peer-on-connect path.
    * @param {import("@reticulum/core").Link} link
    * @param {Uint8Array|null} remoteDestHash
    */
   _registerPeer(link, remoteDestHash) {
+    const stashed = this._unprimeChannel(link);
     const peer = new PeerConn({
       link,
       remoteDestHash,
@@ -374,6 +426,9 @@ export class Room {
     });
     this.peerConns.set(peer.peerId, peer);
     this.callbacks.onPeers([peer.peerId], []);
+    // Deliver anything the peer sent before our PeerConn existed (typically
+    // its syncStep1) ahead of our own handshake so replies keep protocol order.
+    for (const payload of stashed) this._onPeerData(payload, peer);
     this._sendInitialSync(peer);
   }
 

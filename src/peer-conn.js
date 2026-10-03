@@ -31,7 +31,7 @@ import {
  *
  * @extends {MessageBase}
  */
-class YjsSyncMessage extends MessageBase {
+export class YjsSyncMessage extends MessageBase {
   /** Unique y-reticulum message type on the channel (< 0xf000). */
   static MSGTYPE = 0x0001;
 
