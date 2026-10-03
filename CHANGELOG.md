@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-03
+
 ### Fixed
 
 - Link-setup race that dropped the peer's initial sync traffic: with a `linkPolicy` set, the initiator could send its `syncStep1` + awareness while the responder was still awaiting the identify handshake / policy decision, before `YjsSyncMessage` was registered on the channel. Those messages were dropped by the channel (`Unable to find constructor for Channel MSGTYPE 0x1`), notably losing the initiator's initial awareness state. The room now primes each link's channel (registers the message type and stashes early inbound payloads) as soon as the link exists, and flushes the stash when the `PeerConn` takes over
