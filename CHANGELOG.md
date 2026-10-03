@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-03
+
 ### Added
 
 - Optional `linkPolicy` provider option: an application-supplied callback that decides whether a peer link may carry room traffic, evaluated on both the initiator and responder sides once the remote identity is cryptographically proven (via the signed announce on the initiator side, via the signed `LINKIDENTIFY` handshake on the responder side)
