@@ -19,7 +19,20 @@
   "author": "Henri Bergius <henri.bergius@iki.fi>",
   "type": "module",
   "main": "src/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
   "scripts": {
+    "prepublishOnly": "rm -rf dist && npm run types",
     "lint": "npx @biomejs/biome check --use-editorconfig=true src/",
     "format": "npx @biomejs/biome check --use-editorconfig=true --write src/ test/",
     "types": "npx tsc",

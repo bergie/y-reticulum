@@ -121,6 +121,13 @@ and send-window flow control over the Link. Messages exceeding the channel MDU
 message and are transported via a `Resource` (bz2-compressed), reassembled on
 the receiver before being handed to the same `readMessage` path.
 
+A second channel message type (MSGTYPE `0x0002`, `LinkAuthMessage`) is
+reserved for the optional application-defined authorization phase: before any
+Yjs traffic flows on a new link, an `authorizeLink` callback may exchange raw
+application bytes (e.g. Dacar assertions) with the peer over the channel. Yjs
+traffic arriving during the phase is queued and only applied once the phase
+passes.
+
 ## Public API (target)
 
 ```js

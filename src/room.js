@@ -13,14 +13,21 @@
  * lexicographically smaller. The other simply accepts.
  */
 
-import { Destination, DestType, Identity, toHex } from "@reticulum/core";
+import {
+  CEType,
+  ChannelException,
+  Destination,
+  DestType,
+  Identity,
+  toHex,
+} from "@reticulum/core";
 import * as encoding from "lib0/encoding";
 import * as awarenessProtocol from "y-protocols/awareness";
 import * as syncProtocol from "y-protocols/sync";
 import * as Y from "yjs";
 import { getCompressionProvider } from "./compression.js";
 import { messageAwareness, messageSync, readMessage } from "./messages.js";
-import { PeerConn, YjsSyncMessage } from "./peer-conn.js";
+import { LinkAuthMessage, PeerConn, YjsSyncMessage } from "./peer-conn.js";
 
 /**
  * Delay after a peer Link drops before the initiator re-requests the peer's
@@ -60,14 +67,57 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
  */
 
 /**
+ * Exchange API handed to a room's {@link LinkAuthorizer} for the
+ * application-defined authorization phase on a newly established link. `send`
+ * delivers an application payload to the peer; `receive` resolves with the
+ * next application payload from the peer (payloads arriving before the call
+ * are queued). Both are scoped to this link and stop working once the
+ * authorization phase ends.
+ *
+ * @typedef {Object} LinkAuthorizationExchange
+ * @property {(payload: Uint8Array) => Promise<void>} send
+ * @property {() => Promise<Uint8Array>} receive
+ */
+
+/**
+ * Context handed to a room's {@link LinkAuthorizer}. Carries the same identity
+ * proof as {@link LinkPolicyContext}, plus the live link and a
+ * {@link LinkAuthorizationExchange} so the application can run its own
+ * protocol (e.g. a Dacar assertion exchange) before any room traffic flows.
+ *
+ * @typedef {Object} LinkAuthorizationContext
+ * @property {import("@reticulum/core").Link} link The established link.
+ * @property {string} remoteIdentityHash Hex truncated hash of the remote
+ *   peer's long-term identity, proven over the link.
+ * @property {string|null} remoteDestinationHash Hex destination hash of the
+ *   remote room destination, when known (initiator side).
+ * @property {boolean} initiator Whether this side initiated the link.
+ * @property {LinkAuthorizationExchange} exchange
+ */
+
+/**
+ * Application-defined authorization for a peer link, run after the identity
+ * is proven and before any room traffic flows. May exchange messages with the
+ * peer via `context.exchange`; return (or resolve) `false` to refuse the
+ * link. Throwing is treated as a refusal.
+ *
+ * @typedef {(context: LinkAuthorizationContext) => boolean | Promise<boolean>} LinkAuthorizer
+ */
+
+/**
  * @typedef {Object} RoomCallbacks
  * @property {(added: string[], removed: string[]) => void} onPeers
  *   Fired whenever peers are discovered or drop off. Ids are hex link_ids.
  * @property {(synced: boolean) => void} onSynced
  *   Fired when the room's overall sync state changes.
- * @property {(refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean }>) => void} [onRefused]
- *   Fired when a peer link was refused by the link policy. Apps can use this
- *   to surface access requests (e.g. "peer X wants to join").
+ * @property {(refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean, reason?: string }>) => void} [onRefused]
+ *   Fired when a peer link was refused by the link policy or the
+ *   authorization phase. `reason` is `"identify-timeout"` (the peer never
+ *   proved its identity), `"link-policy"` (policy declined),
+ *   `"authorization"` (the authorizer declined or threw) or
+ *   `"authorization-timeout"` (the authorization phase exceeded
+ *   `authorizeTimeoutMs`). Apps can use this to surface access requests
+ *   (e.g. "peer X wants to join").
  */
 
 /**
@@ -90,6 +140,15 @@ export class Room {
    *   policy before any room traffic flows; refused links are torn down.
    * @param {number} [options.identifyTimeoutMs] How long the responder waits
    *   for the initiator's identify handshake before refusing.
+   * @param {LinkAuthorizer | null} [options.authorizeLink] When set, runs the
+   *   application-defined authorization phase on every peer link after the
+   *   identity is proven and before any room traffic flows. The authorizer
+   *   may exchange messages with the peer over the link; a `false` verdict,
+   *   a throw, or exceeding `authorizeTimeoutMs` refuses and tears down the
+   *   link (reported via `onRefused`). Composes with `linkPolicy`, which is
+   *   evaluated first.
+   * @param {number} [options.authorizeTimeoutMs] How long the authorization
+   *   phase may run before the link is refused.
    * @param {RoomCallbacks} options.callbacks
    */
   constructor({
@@ -102,6 +161,8 @@ export class Room {
     announceIntervalMs,
     linkPolicy,
     identifyTimeoutMs = 10_000,
+    authorizeLink,
+    authorizeTimeoutMs = 10_000,
     callbacks,
   }) {
     this.doc = doc;
@@ -113,6 +174,8 @@ export class Room {
     this.announceIntervalMs = announceIntervalMs;
     this.linkPolicy = linkPolicy ?? null;
     this.identifyTimeoutMs = identifyTimeoutMs;
+    this.authorizeLink = authorizeLink ?? null;
+    this.authorizeTimeoutMs = authorizeTimeoutMs;
     this.callbacks = callbacks;
 
     /** @type {import("@reticulum/core").Destination|null} */
@@ -242,12 +305,19 @@ export class Room {
     // interactive) policy must not let concurrent announces each open a Link.
     this.pendingInitiates.add(remoteHex);
 
-    // Link policy (initiator side): the announce cryptographically binds the
-    // remote identity, so the policy can run before any link is opened.
-    if (this.linkPolicy) {
-      const initiatorIdentityHash = toHex(
+    // Link policy / authorization (initiator side): the announce
+    // cryptographically binds the remote identity, so the policy can run
+    // before any link is opened. The identity hash is also needed as the
+    // authorization context.
+    const needsProvenIdentity = Boolean(this.linkPolicy || this.authorizeLink);
+    /** @type {string} */
+    let initiatorIdentityHash = "";
+    if (needsProvenIdentity) {
+      initiatorIdentityHash = toHex(
         await Identity.truncatedHash(detail.identity.publicKey),
       );
+    }
+    if (this.linkPolicy) {
       const allowed = await this.linkPolicy({
         remoteIdentityHash: initiatorIdentityHash,
         remoteDestinationHash: remoteHex,
@@ -260,6 +330,7 @@ export class Room {
             destinationHash: remoteHex,
             identityHash: initiatorIdentityHash,
             initiator: true,
+            reason: "link-policy",
           },
         ]);
         return;
@@ -283,10 +354,35 @@ export class Room {
       // before any await: the responder may start its Yjs sync handshake
       // while we are still identifying.
       this._primeChannel(link);
-      // With a policy, prove our identity to the responder before any room
-      // traffic: their policy cannot evaluate us until we do
-      if (this.linkPolicy) {
+      // With a policy or authorization phase, prove our identity to the
+      // responder before any room traffic: they cannot evaluate us until we
+      // do.
+      if (needsProvenIdentity) {
         await link.identify(this.identity);
+      }
+      // Application-defined authorization phase: runs after the identity is
+      // proven and before any room traffic flows.
+      if (this.authorizeLink) {
+        const verdict = await this._authorizeLink(link, {
+          remoteIdentityHash: initiatorIdentityHash,
+          remoteDestinationHash: remoteHex,
+          initiator: true,
+        });
+        if (!verdict.allowed) {
+          this._unprimeChannel(link);
+          await link.teardown();
+          this.callbacks.onRefused?.([
+            {
+              destinationHash: remoteHex,
+              identityHash: initiatorIdentityHash,
+              initiator: true,
+              reason: verdict.timedOut
+                ? "authorization-timeout"
+                : "authorization",
+            },
+          ]);
+          return;
+        }
       }
       this.linkedDestHexes.add(remoteHex);
       this._registerPeer(link, detail.destinationHash);
@@ -320,29 +416,65 @@ export class Room {
       // before any await: the initiator may already be sending its Yjs sync
       // handshake while we identify / run the link policy.
       this._primeChannel(link);
-      if (this.linkPolicy) {
+      if (this.linkPolicy || this.authorizeLink) {
         const identityHash = await this._awaitIdentify(link);
         if (!identityHash) {
           // The peer never proved who they are: refuse without ceremony
           this._unprimeChannel(link);
           await link.teardown();
           this.callbacks.onRefused?.([
-            { destinationHash: null, identityHash: null, initiator: false },
+            {
+              destinationHash: null,
+              identityHash: null,
+              initiator: false,
+              reason: "identify-timeout",
+            },
           ]);
           return;
         }
-        const allowed = await this.linkPolicy({
-          remoteIdentityHash: identityHash,
-          remoteDestinationHash: null,
-          initiator: false,
-        });
-        if (!allowed) {
-          this._unprimeChannel(link);
-          await link.teardown();
-          this.callbacks.onRefused?.([
-            { destinationHash: null, identityHash, initiator: false },
-          ]);
-          return;
+        if (this.linkPolicy) {
+          const allowed = await this.linkPolicy({
+            remoteIdentityHash: identityHash,
+            remoteDestinationHash: null,
+            initiator: false,
+          });
+          if (!allowed) {
+            this._unprimeChannel(link);
+            await link.teardown();
+            this.callbacks.onRefused?.([
+              {
+                destinationHash: null,
+                identityHash,
+                initiator: false,
+                reason: "link-policy",
+              },
+            ]);
+            return;
+          }
+        }
+        // Application-defined authorization phase: runs after the identity
+        // is proven (and the policy passed) and before any room traffic.
+        if (this.authorizeLink) {
+          const verdict = await this._authorizeLink(link, {
+            remoteIdentityHash: identityHash,
+            remoteDestinationHash: null,
+            initiator: false,
+          });
+          if (!verdict.allowed) {
+            this._unprimeChannel(link);
+            await link.teardown();
+            this.callbacks.onRefused?.([
+              {
+                destinationHash: null,
+                identityHash,
+                initiator: false,
+                reason: verdict.timedOut
+                  ? "authorization-timeout"
+                  : "authorization",
+              },
+            ]);
+            return;
+          }
         }
       }
       this._registerPeer(link, null);
@@ -376,15 +508,18 @@ export class Room {
   }
 
   /**
-   * Registers `YjsSyncMessage` on the link's channel and stashes any inbound
-   * payloads that arrive before the {@link PeerConn} exists. Without this, a
-   * payload arriving during the identify / link-policy await is dropped by the
-   * channel with `Unable to find constructor for Channel MSGTYPE 0x1`.
+   * Registers the Yjs and link-authorization message types on the link's
+   * channel and stashes any inbound payloads that arrive before the
+   * {@link PeerConn} exists (Yjs) or before the application consumes them
+   * (authorization). Without the Yjs stash, a payload arriving during the
+   * identify / link-policy / authorization awaits is dropped by the channel
+   * with `Unable to find constructor for Channel MSGTYPE 0x1`.
    * @param {import("@reticulum/core").Link} link
    */
   _primeChannel(link) {
     const channel = link.getChannel();
     channel.registerMessageType(YjsSyncMessage);
+    channel.registerMessageType(LinkAuthMessage);
     const payloads = /** @type {Uint8Array[]} */ ([]);
     const stash = (/** @type {any} */ msg) => {
       if (!(msg instanceof YjsSyncMessage)) return false;
@@ -392,12 +527,30 @@ export class Room {
       return true;
     };
     channel.addMessageHandler(stash);
-    this._primedChannels.set(link, { payloads, stash });
+    const authPayloads = /** @type {Uint8Array[]} */ ([]);
+    /** @type {Array<{ resolve: (payload: Uint8Array) => void, reject: (err: Error) => void }>} */
+    const authWaiters = [];
+    const authStash = (/** @type {any} */ msg) => {
+      if (!(msg instanceof LinkAuthMessage)) return false;
+      const waiter = authWaiters.shift();
+      if (waiter) waiter.resolve(msg.data);
+      else authPayloads.push(msg.data);
+      return true;
+    };
+    channel.addMessageHandler(authStash);
+    this._primedChannels.set(link, {
+      payloads,
+      stash,
+      authPayloads,
+      authStash,
+      authWaiters,
+    });
   }
 
   /**
-   * Removes the stash handler installed by {@link Room._primeChannel} and
-   * returns the payloads received before the PeerConn took over the channel.
+   * Removes the stash handlers installed by {@link Room._primeChannel} and
+   * returns the Yjs payloads received before the PeerConn took over the
+   * channel. Pending authorization `receive()` calls are rejected.
    * @param {import("@reticulum/core").Link} link
    * @returns {Uint8Array[]}
    */
@@ -405,8 +558,98 @@ export class Room {
     const primed = this._primedChannels.get(link);
     if (!primed) return [];
     this._primedChannels.delete(link);
-    link.getChannel().removeMessageHandler(primed.stash);
+    const channel = link.getChannel();
+    channel.removeMessageHandler(primed.stash);
+    channel.removeMessageHandler(primed.authStash);
+    for (const waiter of primed.authWaiters.splice(0)) {
+      waiter.reject(new Error("authorization channel closed"));
+    }
     return primed.payloads;
+  }
+
+  /**
+   * Runs the application-defined authorization phase on an established link:
+   * hands the authorizer the link plus a send/receive exchange bound to this
+   * link's channel, and races it against `authorizeTimeoutMs`. Any `false`
+   * verdict, throw, or timeout refuses the link. Inbound Yjs traffic is
+   * stashed by `_primeChannel` meanwhile and only delivered once the phase
+   * passes, so no sync flows before the verdict.
+   *
+   * @param {import("@reticulum/core").Link} link
+   * @param {{ remoteIdentityHash: string, remoteDestinationHash: string | null, initiator: boolean }} proven
+   * @returns {Promise<{ allowed: boolean, timedOut: boolean }>}
+   */
+  async _authorizeLink(
+    link,
+    { remoteIdentityHash, remoteDestinationHash, initiator },
+  ) {
+    if (!this.authorizeLink) return { allowed: true, timedOut: false };
+    const primed = this._primedChannels.get(link);
+    if (!primed) return { allowed: false, timedOut: false };
+    const channel = link.getChannel();
+
+    /** Mirrors PeerConn._sendChannel's readiness/retry loop, for auth bytes. */
+    const send = async (/** @type {Uint8Array} */ payload) => {
+      const message = new LinkAuthMessage();
+      message.data = payload;
+      for (;;) {
+        if (!this._primedChannels.has(link) || channel._shutDown) {
+          throw new Error("authorization channel closed");
+        }
+        while (!channel.isReadyToSend()) {
+          if (!this._primedChannels.has(link) || channel._shutDown) {
+            throw new Error("authorization channel closed");
+          }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        try {
+          await channel.send(message);
+          return;
+        } catch (err) {
+          if (
+            err instanceof ChannelException &&
+            err.type === CEType.ME_LINK_NOT_READY
+          ) {
+            continue; // window filled between the check and the serialized send
+          }
+          throw err;
+        }
+      }
+    };
+
+    const receive = () => {
+      const queued = primed.authPayloads.shift();
+      if (queued) return Promise.resolve(queued);
+      return new Promise((resolve, reject) => {
+        primed.authWaiters.push({ resolve, reject });
+      });
+    };
+
+    let timer = null;
+    try {
+      const verdict = await Promise.race([
+        Promise.resolve(
+          this.authorizeLink({
+            link,
+            remoteIdentityHash,
+            remoteDestinationHash,
+            initiator,
+            exchange: { send, receive },
+          }),
+        ),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("authorization timed out")),
+            this.authorizeTimeoutMs,
+          );
+        }),
+      ]);
+      return { allowed: verdict !== false, timedOut: false };
+    } catch {
+      return { allowed: false, timedOut: true };
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
   }
 
   /**

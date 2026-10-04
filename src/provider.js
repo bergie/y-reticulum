@@ -42,9 +42,21 @@ import { Room } from "./room.js";
  *   signed identify handshake over the link) and pass the policy before any
  *   room traffic flows. Refused links are torn down and reported via the
  *   `refused` event, which apps can use to surface access requests.
+ * @property {import("./room.js").LinkAuthorizer} [authorizeLink]
+ *   When set, runs an application-defined authorization phase on every peer
+ *   link after the identity is proven and before any room traffic flows. The
+ *   authorizer receives the live link plus a `send`/`receive` exchange bound
+ *   to the link's channel, so it can run its own protocol (e.g. a Dacar
+ *   assertion exchange) before Yjs sync is allowed to start. A `false`
+ *   verdict, a throw, or exceeding `authorizeTimeoutMs` tears the link down
+ *   and reports it via the `refused` event. Composes with `linkPolicy`,
+ *   which is evaluated first.
  * @property {number} [identifyTimeoutMs]
  *   How long the responder waits for the initiator's identify handshake
  *   before refusing the link.
+ * @property {number} [authorizeTimeoutMs]
+ *   How long the authorization phase may run before the link is refused.
+ *   Only relevant with an `authorizeLink`.
  */
 
 /**
@@ -58,8 +70,9 @@ import { Room } from "./room.js";
  *   Fired when sync state with the peer mesh changes. (Phase 3.)
  * @property {(event: { added: Array<string>, removed: Array<string> }) => void} peers
  *   Fired when peers are discovered or drop off.
- * @property {(event: { refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean }> }) => void} refused
- *   Fired when a peer link was refused by the link policy.
+ * @property {(event: { refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean, reason?: string }> }) => void} refused
+ *   Fired when a peer link was refused by the link policy or the
+ *   authorization phase.
  */
 
 /**
@@ -87,6 +100,8 @@ export class ReticulumProvider extends ObservableV2 {
     this.announceIntervalMs = opts.announceIntervalMs ?? 60_000;
     this.linkPolicy = opts.linkPolicy ?? null;
     this.identifyTimeoutMs = opts.identifyTimeoutMs ?? 10_000;
+    this.authorizeLink = opts.authorizeLink ?? null;
+    this.authorizeTimeoutMs = opts.authorizeTimeoutMs ?? 10_000;
 
     /** Resolved with the room destination's identity on connect(). */
     this.identityPromise = opts.identity
@@ -127,6 +142,8 @@ export class ReticulumProvider extends ObservableV2 {
       announceIntervalMs: this.announceIntervalMs,
       linkPolicy: this.linkPolicy,
       identifyTimeoutMs: this.identifyTimeoutMs,
+      authorizeLink: this.authorizeLink,
+      authorizeTimeoutMs: this.authorizeTimeoutMs,
       callbacks: {
         onPeers: (
           /** @type {string[]} */ added,

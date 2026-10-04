@@ -53,6 +53,35 @@ export class YjsSyncMessage extends MessageBase {
 }
 
 /**
+ * Application message type reserved for the room's link-authorization phase.
+ * Its body is raw application bytes (e.g. a Dacar assertion), carried verbatim;
+ * the channel envelope provides the usual reliability and ordering. Only used
+ * while a link is being authorized, before any Yjs traffic flows.
+ *
+ * @extends {MessageBase}
+ */
+export class LinkAuthMessage extends MessageBase {
+  /** Unique y-reticulum message type on the channel (< 0xf000). */
+  static MSGTYPE = 0x0002;
+
+  constructor() {
+    super();
+    /** @type {Uint8Array} */
+    this.data = new Uint8Array(0);
+  }
+
+  /** @returns {Uint8Array} */
+  pack() {
+    return this.data;
+  }
+
+  /** @param {Uint8Array} raw */
+  unpack(raw) {
+    this.data = raw;
+  }
+}
+
+/**
  * A peer-to-peer connection over a Reticulum Link.
  *
  * Exactly one PeerConn exists per established Link. `send` writes a raw byte
