@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-05
+
 ### Added
 
 - Direct peer dialing (work document #34): `dialHash(remoteHex, remoteIdentityHashHex?)` and `dialPeer(remoteIdentity)` on the provider open a link to a peer whose room destination hash or identity the application knows through its own channels, without waiting for announce-driven discovery. Both run the same policy → signed identify → authorization sequence as the announce-driven initiate (the initiator-side policy evaluates once the transport recalls or solicits the peer's proven identity; an unknown peer reports `false` without wedging future attempts). `roomDestinationHash(roomName, peerIdentityHashHex)` mirrors the room destination derivation so apps can compute a peer's hash from their own state. Dialing by hash without an already-recalled identity falls back to `Destination.recalled` (from `@reticulum/core` 0.9.6), which hydrates the identity from the transport's cache — or solicits it — and verifies it hashes to the dialed hash under our app name
