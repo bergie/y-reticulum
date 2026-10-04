@@ -1,0 +1,143 @@
+/**
+ * @file events.test.js
+ * @description Smoketests for the provider's discovery-lifecycle events:
+ * `announced` (this room's destination going on air) and `discovered` (a
+ * matching announce arriving from the mesh). Also locks in the early
+ * announce burst that covers a first announce dropped while the relay
+ * interface is still coming up.
+ */
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import { Identity } from "@reticulum/core";
+import * as Y from "yjs";
+import { ReticulumProvider } from "../src/index.js";
+import { makeLoopback, nudgeAnnounce, waitFor } from "./loopback.js";
+
+const ROOM = "y-reticulum-events-smoke";
+
+test("announced fires at connect and on the early burst", {
+  timeout: 15_000,
+}, async () => {
+  const { rnsA, close } = await makeLoopback();
+  const provider = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsA,
+    identity: await Identity.generate(),
+  });
+  let announced = 0;
+  provider.on("announced", () => {
+    announced += 1;
+  });
+
+  await provider.connect();
+  assert.equal(announced, 1, "the initial announce fires announced");
+
+  // The burst repeats the announce 1 s after connect; the remaining
+  // repeats land at +4 s and +10 s, well after this test has moved on.
+  await waitFor(() => announced >= 2, 4_000);
+
+  await provider.destroy();
+  await close();
+});
+
+test("announced does not fire after disconnect", {
+  timeout: 15_000,
+}, async () => {
+  const { rnsA, close } = await makeLoopback();
+  const provider = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsA,
+    identity: await Identity.generate(),
+  });
+  let announced = 0;
+  provider.on("announced", () => {
+    announced += 1;
+  });
+
+  await provider.connect();
+  await provider.disconnect();
+  const atDisconnect = announced;
+  assert.ok(atDisconnect >= 1, "connect announced at least once");
+
+  // The pending burst timers were cleared: no further announces within
+  // the +1 s repeat window.
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  assert.equal(announced, atDisconnect, "burst timers are cleared");
+
+  await provider.destroy();
+  await close();
+});
+
+test("discovered fires for a matching announce with the peer's destination hash", {
+  timeout: 15_000,
+}, async () => {
+  const { rnsA, rnsB, close } = await makeLoopback();
+  const providerA = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsA,
+    identity: await Identity.generate(),
+  });
+  const providerB = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsB,
+    identity: await Identity.generate(),
+  });
+  /** @type {string[]} */
+  const discoveredA = [];
+  providerA.on("discovered", (/** @type {any} */ e) => {
+    discoveredA.push(e.remoteHex);
+  });
+
+  await providerA.connect();
+  await providerB.connect();
+  await nudgeAnnounce(providerA, providerB);
+  await waitFor(() => discoveredA.length > 0, 5_000);
+
+  assert.equal(
+    discoveredA[0],
+    // @ts-expect-error -- reaching into the room for the expected hash
+    providerB.room.myHex,
+    "discovered carries the peer's room destination hash",
+  );
+
+  await providerA.destroy().catch(() => {});
+  await providerB.destroy().catch(() => {});
+  await close();
+});
+
+test("discovered fires even when the link is refused", {
+  timeout: 15_000,
+}, async () => {
+  const { rnsA, rnsB, close } = await makeLoopback();
+  const providerA = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsA,
+    identity: await Identity.generate(),
+    linkPolicy: () => false,
+  });
+  const providerB = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsB,
+    identity: await Identity.generate(),
+  });
+  /** @type {string[]} */
+  const discoveredA = [];
+  let peersA = 0;
+  providerA.on("discovered", (/** @type {any} */ e) => {
+    discoveredA.push(e.remoteHex);
+  });
+  providerA.on("peers", () => {
+    peersA += 1;
+  });
+
+  await providerA.connect();
+  await providerB.connect();
+  await nudgeAnnounce(providerA, providerB);
+  await waitFor(() => discoveredA.length > 0, 5_000);
+
+  assert.ok(
+    discoveredA.length > 0,
+    "the announce fact is narrable despite the refusal",
+  );
+  assert.equal(peersA, 0, "no peer is ever added");
+  assert.equal(providerA.room?.peerConns.size, 0, "no link was kept");
+
+  await providerA.destroy().catch(() => {});
+  await providerB.destroy().catch(() => {});
+  await close();
+});

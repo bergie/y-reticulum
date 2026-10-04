@@ -134,11 +134,13 @@ test("authorization refusal tears the link down and reports the reason", {
   );
   assert.equal(providerA.room?.peerConns.size, 0, "no peer registered on A");
   assert.equal(providerB.room?.peerConns.size, 0, "no peer registered on B");
-  assert.equal(refusalsA.length, 1, "A reports exactly one refusal");
-  assert.equal(
-    refusalsA[0].reason,
-    "authorization",
-    "refusal carries the authorization reason",
+  // The early-announce burst re-discovery can re-attempt the link within
+  // the wait window, so more than one refusal is possible; every one of
+  // them must carry the authorization reason.
+  assert.ok(refusalsA.length >= 1, "A reports the refusal");
+  assert.ok(
+    refusalsA.every((/** @type {any} */ r) => r.reason === "authorization"),
+    "every refusal carries the authorization reason",
   );
 
   await providerA.destroy().catch(() => {});

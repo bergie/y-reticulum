@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `discovered` provider event, fired whenever an announce for the room arrives from the mesh — before any glare or link-policy decision, so apps can narrate room propagation even when no link forms (payload: `{ remoteHex }`)
+- `announced` provider event, fired when the room's destination goes on air: once at connect (the first announce fires immediately) and after each early-burst re-announce. The periodic re-announce cadence is delegated to `@reticulum/core` and does not fire it
+
 ### Fixed
 
 - Stale peer links: when a peer died without tearing its link down (crash, reload, killed worker), its announce was ignored because the room still considered the destination linked, leaving both sides unsynced until the Reticulum link timeout expired. An announce from a linked peer now checks whether a live (`ACTIVE`) link actually exists; if not, the stale connection is destroyed — with the usual `peers removed` bookkeeping — and a fresh link is initiated, so recovery takes one announce instead of minutes. A re-announce while the link is live remains a no-op
+- Slow first discovery after connect: the immediate first announce races interface readiness at the relay (a just-connected WebSocket client is not yet a viable repeater path), and when it is dropped, discovery stalls for a full announce interval — compounded by the glare rule, where only the larger destination hash initiates and thus needs to receive the peer's announce. The room now repeats the announce 1 s, 4 s and 10 s after connect, so a dropped first announce costs seconds instead of a minute; the periodic cadence takes over after. Note that a refused link is re-attempted on each new announce, so refusals can now repeat within seconds rather than at the announce interval
 - Publishing from CI: the `publish-npm` workflow job ran `npm publish` without installing dependencies, so the `prepublishOnly` type-generation step (`tsc`) failed because npx fetched the wrong `tsc` stub package instead of the local TypeScript. The job now runs `npm ci` first, and the `types` script invokes `tsc` directly from `node_modules` instead of through `npx`
 
 ## [0.3.0] - 2026-10-04

@@ -70,6 +70,14 @@ import { Room } from "./room.js";
  *   Fired when sync state with the peer mesh changes. (Phase 3.)
  * @property {(event: { added: Array<string>, removed: Array<string> }) => void} peers
  *   Fired when peers are discovered or drop off.
+ * @property {(event: { remoteHex: string }) => void} discovered
+ *   Fired when an announce for this room arrives from the mesh, before any
+ *   glare or policy decision — evidence the room propagates even when no
+ *   link forms.
+ * @property {(event: {}) => void} announced
+ *   Fired when this peer's room destination goes on air: at connect and on
+ *   each early-burst re-announce. The periodic re-announce cadence is
+ *   delegated to `@reticulum/core` and does not fire this event.
  * @property {(event: { refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean, reason?: string }> }) => void} refused
  *   Fired when a peer link was refused by the link policy or the
  *   authorization phase.
@@ -149,6 +157,9 @@ export class ReticulumProvider extends ObservableV2 {
           /** @type {string[]} */ added,
           /** @type {string[]} */ removed,
         ) => this.emit("peers", [{ added, removed }]),
+        onDiscovered: (/** @type {string} */ remoteHex) =>
+          this.emit("discovered", [{ remoteHex }]),
+        onAnnounced: () => this.emit("announced", [{}]),
         onSynced: (/** @type {boolean} */ synced) =>
           this.emit("synced", [{ synced }]),
         onRefused: (/** @type {any[]} */ refusals) =>

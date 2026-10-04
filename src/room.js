@@ -38,6 +38,15 @@ import { LinkAuthMessage, PeerConn, YjsSyncMessage } from "./peer-conn.js";
  */
 const RECONNECT_PATH_REQUEST_DELAY_MS = 1500;
 
+/**
+ * Delays between connect() and the early announce burst that covers a
+ * dropped first announce (which races interface readiness at the relay).
+ * Each fires once; large enough for the interface to be established end to
+ * end, small enough that discovery does not wait for the periodic announce
+ * cadence.
+ */
+const EARLY_ANNOUNCE_DELAYS_MS = [1_000, 4_000, 10_000];
+
 /** Constant-time-ish equality for two equal-length byte arrays. */
 function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
   if (a.length !== b.length) return false;
@@ -109,6 +118,15 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
  * @typedef {Object} RoomCallbacks
  * @property {(added: string[], removed: string[]) => void} onPeers
  *   Fired whenever peers are discovered or drop off. Ids are hex link_ids.
+ * @property {(remoteHex: string) => void} [onDiscovered]
+ *   Fired when an announce matching this room arrives, before any glare
+ *   or policy decision — the room-propagation fact, narrable even when a
+ *   subsequent link does not form.
+ * @property {() => void} [onAnnounced]
+ *   Fired when this room's destination goes on air: once right after
+ *   connect() (the first announce fires immediately) and after each
+ *   successful early-burst repeat. The periodic re-announce cadence is
+ *   delegated to `@reticulum/core` and is not observed here.
  * @property {(synced: boolean) => void} onSynced
  *   Fired when the room's overall sync state changes.
  * @property {(refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean, reason?: string }>) => void} [onRefused]
@@ -197,6 +215,8 @@ export class Room {
     this.pendingInitiates = new Set();
     /** Destination hex → scheduled reconnect path-request timer (initiator side). */
     this.pendingPathRequests = new Map();
+    /** Timers for the early announce burst after connect (see connect()). */
+    this.earlyAnnounceTimers = new Set();
     /** Link → payloads stashed before the peer's PeerConn existed (see
      * {@link Room._primeChannel}). */
     this._primedChannels = new Map();
@@ -234,6 +254,28 @@ export class Room {
     // repeats at the interval to keep cached mesh paths fresh against
     // transit-relay TTLs.
     this.dest.startAnnouncing({ intervalMs: this.announceIntervalMs });
+    // startAnnouncing() fires the first announce immediately.
+    this.callbacks.onAnnounced?.();
+
+    // The immediate first announce races interface readiness at the relay
+    // (a just-connected WebSocket client may not yet be a viable repeater
+    // path): when it is dropped, discovery stalls for a full announce
+    // interval — compounded by the glare rule, where only the larger
+    // destination hash initiates and thus needs to receive the peer's
+    // announce. Burst a few early repeats so a dropped packet costs
+    // seconds, not a minute; the periodic cadence takes over after.
+    for (const delay of EARLY_ANNOUNCE_DELAYS_MS) {
+      const timer = setTimeout(() => {
+        this.earlyAnnounceTimers.delete(timer);
+        if (this.connected && this.dest) {
+          this.dest
+            .announce()
+            .then(() => this.callbacks.onAnnounced?.())
+            .catch(() => {});
+        }
+      }, delay);
+      this.earlyAnnounceTimers.add(timer);
+    }
 
     this.connected = true;
   }
@@ -243,6 +285,8 @@ export class Room {
     if (!this.connected) return;
     this.connected = false;
 
+    for (const timer of this.earlyAnnounceTimers) clearTimeout(timer);
+    this.earlyAnnounceTimers.clear();
     this.dest?.stopAnnouncing();
     for (const timer of this.pendingPathRequests.values()) clearTimeout(timer);
     this.pendingPathRequests.clear();
@@ -292,6 +336,10 @@ export class Room {
     }
     const remoteHex = toHex(/** @type {Uint8Array} */ (detail.destinationHash));
     if (remoteHex === this.myHex) return; // self (transport filters this, but be safe)
+    // A matching announce is a discovery fact in its own right: narrate it
+    // before any glare or policy decision, so apps can see that room
+    // announcements propagate even when a subsequent link does not form
+    this.callbacks.onDiscovered?.(remoteHex);
     if (this.peerConns.size >= this.maxConns) return;
     if (this.linkedDestHexes.has(remoteHex)) {
       // The peer is announcing, which is evidence it is alive — but our
