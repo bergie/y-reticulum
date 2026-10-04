@@ -126,7 +126,8 @@ The provider extends `ObservableV2` and emits:
 | `synced` | `{ synced: boolean }` | sync state with the peer mesh changes |
 | `peers` | `{ added: string[], removed: string[] }` | peers are discovered or drop off |
 | `discovered` | `{ remoteHex: string }` | an announce for this room arrives from the mesh, before any glare or policy decision (evidence the room propagates, even when no link forms) |
-| `announced` | `{}` | this peer's room destination goes on air (at connect and on the early-burst re-announces) |
+| `announced` | `{}` | this peer's room destination actually broadcasts an announce (connect-time, early-burst and periodic cadences alike) |
+| `announce-failed` | `{ error: string }` | an early-burst announce attempt threw before broadcast, with the reason |
 | `refused` | `{ refusals: Array<{ destinationHash: string \| null, identityHash: string \| null, initiator: boolean, reason?: string }> }` | a peer link was refused by the link policy or the authorization phase |
 
 ## Access control

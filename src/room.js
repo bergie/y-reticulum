@@ -123,10 +123,11 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
  *   or policy decision — the room-propagation fact, narrable even when a
  *   subsequent link does not form.
  * @property {() => void} [onAnnounced]
- *   Fired when this room's destination goes on air: once right after
- *   connect() (the first announce fires immediately) and after each
- *   successful early-burst repeat. The periodic re-announce cadence is
- *   delegated to `@reticulum/core` and is not observed here.
+ *   Fired each time this room's destination actually broadcasts an announce
+ *   (core 0.9.5's "announced" destination event covers the immediate,
+ *   early-burst, and periodic cadences uniformly).
+ * @property {(error: string) => void} [onAnnounceFailed]
+ *   Fired when an announce attempt threw before broadcast.
  * @property {(synced: boolean) => void} onSynced
  *   Fired when the room's overall sync state changes.
  * @property {(refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean, reason?: string }>) => void} [onRefused]
@@ -254,8 +255,15 @@ export class Room {
     // repeats at the interval to keep cached mesh paths fresh against
     // transit-relay TTLs.
     this.dest.startAnnouncing({ intervalMs: this.announceIntervalMs });
-    // startAnnouncing() fires the first announce immediately.
-    this.callbacks.onAnnounced?.();
+
+    // Truthful announce reporting (work document #34): core 0.9.5 emits
+    // "announced" on the destination only after the packet is broadcast, so
+    // the narration reflects actual broadcasts — and the early burst's
+    // failures surface through onAnnounceFailed with their reason instead
+    // of being swallowed.
+    this.dest.addEventListener("announced", () =>
+      this.callbacks.onAnnounced?.(),
+    );
 
     // The immediate first announce races interface readiness at the relay
     // (a just-connected WebSocket client may not yet be a viable repeater
@@ -270,8 +278,11 @@ export class Room {
         if (this.connected && this.dest) {
           this.dest
             .announce()
-            .then(() => this.callbacks.onAnnounced?.())
-            .catch(() => {});
+            .catch((/** @type {any} */ err) =>
+              this.callbacks.onAnnounceFailed?.(
+                /** @type {any} */ (err)?.message ?? String(err),
+              ),
+            );
         }
       }, delay);
       this.earlyAnnounceTimers.add(timer);

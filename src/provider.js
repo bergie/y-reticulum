@@ -75,9 +75,12 @@ import { Room } from "./room.js";
  *   glare or policy decision — evidence the room propagates even when no
  *   link forms.
  * @property {(event: {}) => void} announced
- *   Fired when this peer's room destination goes on air: at connect and on
- *   each early-burst re-announce. The periodic re-announce cadence is
- *   delegated to `@reticulum/core` and does not fire this event.
+ *   Fired each time this peer's room destination actually broadcasts an
+ *   announce — the connect-time, early-burst and periodic cadences alike.
+ * @property {(event: { error: string }) => void} announce-failed
+ *   Fired when an early-burst announce attempt throws before broadcast,
+ *   with the failure reason. Failures of the periodic re-announce cadence
+ *   are logged by `@reticulum/core` and only skip that tick.
  * @property {(event: { refusals: Array<{ destinationHash: string | null, identityHash: string | null, initiator: boolean, reason?: string }> }) => void} refused
  *   Fired when a peer link was refused by the link policy or the
  *   authorization phase.
@@ -160,6 +163,8 @@ export class ReticulumProvider extends ObservableV2 {
         onDiscovered: (/** @type {string} */ remoteHex) =>
           this.emit("discovered", [{ remoteHex }]),
         onAnnounced: () => this.emit("announced", [{}]),
+        onAnnounceFailed: (/** @type {string} */ error) =>
+          this.emit("announce-failed", [{ error }]),
         onSynced: (/** @type {boolean} */ synced) =>
           this.emit("synced", [{ synced }]),
         onRefused: (/** @type {any[]} */ refusals) =>

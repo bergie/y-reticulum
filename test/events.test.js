@@ -30,7 +30,9 @@ test("announced fires at connect and on the early burst", {
   });
 
   await provider.connect();
-  assert.equal(announced, 1, "the initial announce fires announced");
+  // The event reflects actual broadcasts, so it lands asynchronously after
+  // connect() resolves.
+  await waitFor(() => announced >= 1, 4_000);
 
   // The burst repeats the announce 1 s after connect; the remaining
   // repeats land at +4 s and +10 s, well after this test has moved on.
@@ -54,9 +56,9 @@ test("announced does not fire after disconnect", {
   });
 
   await provider.connect();
+  await waitFor(() => announced >= 1, 4_000);
   await provider.disconnect();
   const atDisconnect = announced;
-  assert.ok(atDisconnect >= 1, "connect announced at least once");
 
   // The pending burst timers were cleared: no further announces within
   // the +1 s repeat window.
@@ -139,5 +141,32 @@ test("discovered fires even when the link is refused", {
 
   await providerA.destroy().catch(() => {});
   await providerB.destroy().catch(() => {});
+  await close();
+});
+
+test("announce-failed surfaces early-burst announce errors", {
+  timeout: 15_000,
+}, async () => {
+  const { rnsA, close } = await makeLoopback();
+  const provider = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsA,
+    identity: await Identity.generate(),
+  });
+  /** @type {string[]} */
+  const failures = [];
+  provider.on("announce-failed", (/** @type {any} */ e) => {
+    failures.push(e.error);
+  });
+
+  await provider.connect();
+  // Sabotage announces before the +1 s burst tick fires, so its failure —
+  // rather than a swallowed rejection — is reported.
+  // @ts-expect-error -- white-box: force announce() to fail
+  provider.room.dest.announce = () => Promise.reject(new Error("relay down"));
+
+  await waitFor(() => failures.length > 0, 4_000);
+  assert.equal(failures[0], "relay down", "the failure reason is surfaced");
+
+  await provider.destroy().catch(() => {});
   await close();
 });

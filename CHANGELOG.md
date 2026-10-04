@@ -10,7 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `discovered` provider event, fired whenever an announce for the room arrives from the mesh — before any glare or link-policy decision, so apps can narrate room propagation even when no link forms (payload: `{ remoteHex }`)
-- `announced` provider event, fired when the room's destination goes on air: once at connect (the first announce fires immediately) and after each early-burst re-announce. The periodic re-announce cadence is delegated to `@reticulum/core` and does not fire it
+- `announced` provider event, fired each time the room's destination actually broadcasts an announce — the connect-time, early-burst and periodic re-announce cadences alike. Reporting hooks the `announced` event `@reticulum/core` 0.9.5 dispatches on the destination after the packet is handed to the interface layer, so narration reflects real broadcasts (announces dropped before broadcast do not fire it)
+- `announce-failed` provider event, fired when an early-burst announce attempt throws before broadcast, carrying the failure reason — previously such rejections were swallowed silently
+
+### Changed
+
+- Updated `@reticulum/core` and `@reticulum/node` to `^0.9.5`, adding the destination `announced` event used for truthful announce narration
 
 ### Fixed
 
