@@ -19,6 +19,7 @@ import {
   Destination,
   DestType,
   Identity,
+  LinkStatus,
   toHex,
 } from "@reticulum/core";
 import * as encoding from "lib0/encoding";
@@ -292,10 +293,28 @@ export class Room {
     const remoteHex = toHex(/** @type {Uint8Array} */ (detail.destinationHash));
     if (remoteHex === this.myHex) return; // self (transport filters this, but be safe)
     if (this.peerConns.size >= this.maxConns) return;
-    if (
-      this.linkedDestHexes.has(remoteHex) ||
-      this.pendingInitiates.has(remoteHex)
-    ) {
+    if (this.linkedDestHexes.has(remoteHex)) {
+      // The peer is announcing, which is evidence it is alive — but our
+      // link to it may be a stale remnant of its previous session (it died
+      // without tearing the link down: a crash, a reload, a killed
+      // worker). Such a link only goes away via the Reticulum link
+      // timeout, which would leave both sides unsynced for minutes. If no
+      // live link exists for this destination, drop the stale connection
+      // and fall through to re-initiate.
+      const conns = [...this.peerConns.values()].filter(
+        (conn) =>
+          conn.remoteDestHash && toHex(conn.remoteDestHash) === remoteHex,
+      );
+      if (conns.some((conn) => conn.link.status === LinkStatus.ACTIVE)) return;
+      for (const conn of conns) {
+        conn.destroy();
+        // destroy() does not fire onClose — do the removal bookkeeping here.
+        // (The reconnect path request this schedules is redundant — the peer
+        // is announcing — but harmless and coalesced.)
+        this._onPeerClose(conn);
+      }
+    }
+    if (this.pendingInitiates.has(remoteHex)) {
       return;
     }
     // Glare avoidance: only the lexicographically smaller destination initiates.
