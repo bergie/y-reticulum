@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04
+
 ### Added
 
 - Optional `authorizeLink` provider option: an application-defined authorization phase on every peer link, run after the identity is proven and before any room traffic flows. The authorizer receives the live link plus a `send`/`receive` exchange bound to the link's channel (reliable, ordered, inbound payloads queued), so it can run its own protocol — e.g. noflo-ui's Dacar on-link assertion exchange (noflo-ui work document #25 §6.2) — before Yjs sync starts. A `false` verdict, a throw, or exceeding `authorizeTimeoutMs` tears the link down and reports it via `refused`; anything the peer sent meanwhile is stashed and only delivered once the phase passes
