@@ -4,7 +4,7 @@
  */
 
 export { getCompressionProvider } from "./compression.js";
-export { roomDestinationName } from "./destination.js";
+export { roomDestinationHash, roomDestinationName } from "./destination.js";
 export { messageAwareness, messageSync, readMessage } from "./messages.js";
 export { PeerConn } from "./peer-conn.js";
 export { ReticulumProvider } from "./provider.js";

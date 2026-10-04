@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Identity } from "@reticulum/core";
+import { Identity, toHex } from "@reticulum/core";
 import * as Y from "yjs";
 import { ReticulumProvider } from "../src/index.js";
 import { makeLoopback, nudgeAnnounce, waitFor } from "./loopback.js";
@@ -83,8 +83,11 @@ test("discovered fires for a matching announce with the peer's destination hash"
   });
   /** @type {string[]} */
   const discoveredA = [];
+  /** @type {string[]} */
+  const publicKeysA = [];
   providerA.on("discovered", (/** @type {any} */ e) => {
     discoveredA.push(e.remoteHex);
+    publicKeysA.push(e.publicKeyHex);
   });
 
   await providerA.connect();
@@ -97,6 +100,12 @@ test("discovered fires for a matching announce with the peer's destination hash"
     // @ts-expect-error -- reaching into the room for the expected hash
     providerB.room.myHex,
     "discovered carries the peer's room destination hash",
+  );
+  assert.equal(
+    publicKeysA[0],
+    // @ts-expect-error -- reaching into the room for the peer identity
+    toHex(providerB.room.identity.publicKey),
+    "discovered carries the peer's public key for the app's peer cache",
   );
 
   await providerA.destroy().catch(() => {});

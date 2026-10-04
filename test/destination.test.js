@@ -8,7 +8,11 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { roomDestinationName } from "../src/destination.js";
+import { Destination, DestType, Identity, toHex } from "@reticulum/core";
+import {
+  roomDestinationHash,
+  roomDestinationName,
+} from "../src/destination.js";
 
 test("roomDestinationName is deterministic for the same input", async () => {
   const a = await roomDestinationName("my-room");
@@ -43,4 +47,32 @@ test("roomDestinationName maps known inputs to a locked hash", async () => {
     await roomDestinationName("y-reticulum"),
     "y-reticulum.sync.2b3a1eacdb01545a",
   );
+});
+
+test("roomDestinationHash matches the peer's actual destination hash", async () => {
+  // The whole point of dial-by-hash: the hash computed from the room name
+  // and the peer's identity hash must be the hash the peer's room
+  // destination actually announces with.
+  const room = "dial-test-room";
+  const identity = await Identity.generate();
+  const identityHashHex = toHex(
+    await Identity.truncatedHash(identity.publicKey),
+  );
+  const hashHex = await roomDestinationHash(room, identityHashHex);
+  const appName = await roomDestinationName(room);
+  const dest = await Destination.IN(appName, DestType.SINGLE, identity);
+  assert.equal(
+    hashHex,
+    toHex(/** @type {Uint8Array} */ (dest.destinationHash)),
+  );
+});
+
+test("roomDestinationHash is deterministic and room-scoped", async () => {
+  const identityHashHex = "0123456789abcdef0123456789abcdef";
+  const a = await roomDestinationHash("room", identityHashHex);
+  const b = await roomDestinationHash("room", identityHashHex);
+  const c = await roomDestinationHash("other-room", identityHashHex);
+  assert.equal(a, b, "same room + identity → same hash");
+  assert.notEqual(a, c, "different rooms → different hashes");
+  assert.match(a, /^[0-9a-f]{32}$/, "a destination hash is 16 hex bytes");
 });

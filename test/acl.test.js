@@ -82,3 +82,64 @@ test("link policy gates sync: granted peers sync, refused peers do not", {
   await providerB.destroy().catch(() => {});
   await close();
 });
+
+test("an initiator-side policy refusal does not wedge later retries", {
+  timeout: 30000,
+}, async () => {
+  // Regression: a refused initiator-side policy used to leave the peer's
+  // hash stuck in the room's initiate de-bounce, so the announce loop never
+  // re-attempted — a later grant could never connect. Force the glare order
+  // so the owner (A) is the initiator and the refusal happens on its side.
+  const { makeLoopback } = await import("./loopback.js");
+  let idA = await Identity.generate();
+  let idB = await Identity.generate();
+  let hashA = toHex(await Identity.truncatedHash(await idA.getPublicKey()));
+  let hashB = toHex(await Identity.truncatedHash(await idB.getPublicKey()));
+  while (hashA >= hashB) {
+    idA = await Identity.generate();
+    idB = await Identity.generate();
+    hashA = toHex(await Identity.truncatedHash(await idA.getPublicKey()));
+    hashB = toHex(await Identity.truncatedHash(await idB.getPublicKey()));
+  }
+
+  const { rnsA, rnsB, close } = await makeLoopback();
+  const granted = new Set();
+  /** @type {any[]} */
+  const refusals = [];
+  const providerA = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsA,
+    identity: idA,
+    linkPolicy: ({ remoteIdentityHash }) => granted.has(remoteIdentityHash),
+  });
+  providerA.on("refused", (/** @type {any} */ e) => {
+    refusals.push(...e.refusals);
+  });
+  const providerB = new ReticulumProvider(ROOM, new Y.Doc(), {
+    reticulum: rnsB,
+    identity: idB,
+    linkPolicy: () => true,
+  });
+
+  await providerA.connect();
+  await providerB.connect();
+  await nudgeAnnounce(providerA, providerB);
+  await waitFor(() => refusals.length > 0, 10000);
+  assert.equal(refusals[0].identityHash, hashB, "B was refused by A");
+
+  // The refused attempt must not wedge the initiate de-bounce.
+  // @ts-expect-error -- white-box: regression asserts internal bookkeeping
+  assert.equal(providerA.room.pendingInitiates.size, 0);
+
+  granted.add(hashB);
+  await nudgeAnnounce(providerA, providerB);
+  await waitFor(() => providerA.room?.peerConns.size === 1, 10000);
+  assert.equal(
+    providerA.room?.peerConns.size,
+    1,
+    "a granted peer connects after an earlier refusal",
+  );
+
+  await providerA.destroy().catch(() => {});
+  await providerB.destroy().catch(() => {});
+  await close();
+});

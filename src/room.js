@@ -18,6 +18,7 @@ import {
   ChannelException,
   Destination,
   DestType,
+  fromHex,
   Identity,
   LinkStatus,
   toHex,
@@ -118,10 +119,11 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
  * @typedef {Object} RoomCallbacks
  * @property {(added: string[], removed: string[]) => void} onPeers
  *   Fired whenever peers are discovered or drop off. Ids are hex link_ids.
- * @property {(remoteHex: string) => void} [onDiscovered]
+ * @property {(remoteHex: string, publicKeyHex: string) => void} [onDiscovered]
  *   Fired when an announce matching this room arrives, before any glare
  *   or policy decision — the room-propagation fact, narrable even when a
- *   subsequent link does not form.
+ *   subsequent link does not form. The peer's full public key (hex) rides
+ *   along for the app's peer cache.
  * @property {() => void} [onAnnounced]
  *   Fired each time this room's destination actually broadcasts an announce
  *   (core 0.9.5's "announced" destination event covers the immediate,
@@ -349,8 +351,13 @@ export class Room {
     if (remoteHex === this.myHex) return; // self (transport filters this, but be safe)
     // A matching announce is a discovery fact in its own right: narrate it
     // before any glare or policy decision, so apps can see that room
-    // announcements propagate even when a subsequent link does not form
-    this.callbacks.onDiscovered?.(remoteHex);
+    // announcements propagate even when a subsequent link does not form.
+    // The full public key rides along: the app can persist it as a peer
+    // cache and dial directly on reconnect (work document #34)
+    this.callbacks.onDiscovered?.(
+      remoteHex,
+      toHex(detail.identity?.publicKey ?? []),
+    );
     if (this.peerConns.size >= this.maxConns) return;
     if (this.linkedDestHexes.has(remoteHex)) {
       // The peer is announcing, which is evidence it is alive — but our
@@ -395,38 +402,62 @@ export class Room {
         await Identity.truncatedHash(detail.identity.publicKey),
       );
     }
-    if (this.linkPolicy) {
-      const allowed = await this.linkPolicy({
-        remoteIdentityHash: initiatorIdentityHash,
-        remoteDestinationHash: remoteHex,
-        initiator: true,
-      });
-      if (!allowed) {
-        this.pendingInitiates.delete(remoteHex);
-        this.callbacks.onRefused?.([
-          {
-            destinationHash: remoteHex,
-            identityHash: initiatorIdentityHash,
-            initiator: true,
-            reason: "link-policy",
-          },
-        ]);
-        return;
-      }
-    }
+    const out = await Destination.OUT(
+      this.appName,
+      DestType.SINGLE,
+      detail.identity,
+      this.rns,
+    );
+    await this._establishOutgoingLink(remoteHex, out, initiatorIdentityHash);
+  }
 
+  /**
+   * Establishes an outgoing peer link to a room peer: the link policy,
+   * signed identify, and application authorization phases all run before
+   * any room traffic. Shared by the announce-driven initiate and the
+   * direct dial (work document #34).
+   *
+   * @param {string} remoteHex Hex of the peer's room destination hash.
+   * @param {InstanceType<typeof Destination>} out The OUT destination
+   *   targeting the peer — from its announce identity, or recalled by hash
+   *   when the peer's identity hash is known from project state.
+   * @param {string} initiatorIdentityHash Hex of the remote peer's truncated
+   *   identity hash, proven by its announce (initiate path) or the transport's
+   *   identity recall (dial path); feeds the link-policy context.
+   * @returns {Promise<boolean>} Whether a link was established.
+   */
+  async _establishOutgoingLink(remoteHex, out, initiatorIdentityHash) {
     let link = /** @type {import("@reticulum/core").Link|null} */ (null);
     try {
-      const out = await Destination.OUT(
-        this.appName,
-        DestType.SINGLE,
-        detail.identity,
-        this.rns,
-      );
+      // Link policy (initiator side): the announce (or transport identity
+      // recall) cryptographically binds the remote identity, so the policy
+      // can run before any link is opened. A refusal must still fall
+      // through the finally below — a wedged pendingInitiates entry would
+      // block every future announce-driven retry, including after the app
+      // changes its verdict.
+      if (this.linkPolicy) {
+        const allowed = await this.linkPolicy({
+          remoteIdentityHash: initiatorIdentityHash,
+          remoteDestinationHash: remoteHex,
+          initiator: true,
+        });
+        if (!allowed) {
+          this.callbacks.onRefused?.([
+            {
+              destinationHash: remoteHex,
+              identityHash: initiatorIdentityHash,
+              initiator: true,
+              reason: "link-policy",
+            },
+          ]);
+          return false;
+        }
+      }
+
       link = await out.createLink();
       if (!this.connected) {
         await link.teardown();
-        return;
+        return false;
       }
       // Register the Yjs message type (and stash early inbound traffic)
       // before any await: the responder may start its Yjs sync handshake
@@ -435,7 +466,7 @@ export class Room {
       // With a policy or authorization phase, prove our identity to the
       // responder before any room traffic: they cannot evaluate us until we
       // do.
-      if (needsProvenIdentity) {
+      if (this.linkPolicy || this.authorizeLink) {
         await link.identify(this.identity);
       }
       // Application-defined authorization phase: runs after the identity is
@@ -459,18 +490,163 @@ export class Room {
                 : "authorization",
             },
           ]);
-          return;
+          return false;
         }
       }
       this.linkedDestHexes.add(remoteHex);
-      this._registerPeer(link, detail.destinationHash);
+      this._registerPeer(link, out.destinationHash);
+      return true;
     } catch {
-      // Peer vanished mid-handshake, transport error, etc. — the announce loop
-      // will retry on the next announce if the peer is still around.
+      // Peer vanished mid-handshake, transport error, etc. — the announce
+      // loop will retry on the next announce if the peer is still around.
       if (link) this._unprimeChannel(link);
+      return false;
     } finally {
       this.pendingInitiates.delete(remoteHex);
     }
+  }
+
+  /**
+   * Dials a peer's room destination directly from its destination hash,
+   * without waiting for announce-driven discovery (work document #34): for
+   * peers whose room destination hash the application knows through its own
+   * channels. The peer proves its identity during the identify phase; the
+   *   same identify/authorization sequence as the announce-driven initiate
+   *   applies. The initiator-side link policy runs once the transport
+   *   recalls (or solicits) the peer's proven identity; when the peer stays
+   *   unknown the link is not attempted, so the responder-side policy
+   *   (evaluated after identify) remains the gate.
+   *
+   * @param {string} remoteHex Hex of the peer's room destination hash.
+   * @param {string} [remoteIdentityHashHex] Hex of the peer's identity
+   *   hash, when the application knows it — reported in refusal payloads
+   *   and used as the policy context fallback.
+   * @returns {Promise<boolean>} Whether a link was established (true also
+   *   when an active link to this peer already existed, or a link attempt
+   *   is in flight).
+   */
+  async dialHash(remoteHex, remoteIdentityHashHex = "") {
+    if (!this.connected || !this.dest) return false;
+    const remoteHashBytes = fromHex(remoteHex);
+    const existing = [...this.peerConns.values()].some(
+      (conn) =>
+        conn.remoteDestHash &&
+        toHex(conn.remoteDestHash) === remoteHex &&
+        conn.link.status === LinkStatus.ACTIVE,
+    );
+    if (existing) return true;
+    if (this.pendingInitiates.has(remoteHex)) return true;
+    this.pendingInitiates.add(remoteHex);
+    try {
+      // Stage 1 — identity: recall from the transport's cache (populated
+      // from processed announces, persisted) or solicit by waiting for the
+      // peer's next announce (work document #34). The identity lets the
+      // link policy evaluate the TRUE remote hash before any link is
+      // opened; the announce reception itself also refreshes the path.
+      const remoteIdentity =
+        (await this.rns.transport
+          .recallOrSolicitIdentity?.(remoteHashBytes, 10_000)
+          .catch(() => null)) ?? null;
+      const initiatorIdentityHash = remoteIdentity
+        ? toHex(await Identity.truncatedHash(remoteIdentity.publicKey))
+        : remoteIdentityHashHex;
+      if (this.linkPolicy && remoteIdentity) {
+        const allowed = await this.linkPolicy({
+          remoteIdentityHash: initiatorIdentityHash,
+          remoteDestinationHash: remoteHex,
+          initiator: true,
+        });
+        if (!allowed) {
+          this.callbacks.onRefused?.([
+            {
+              destinationHash: remoteHex,
+              identityHash: initiatorIdentityHash,
+              initiator: true,
+              reason: "link-policy",
+            },
+          ]);
+          return false;
+        }
+      }
+      // Stage 2 — path: a LINKREQUEST needs a path to route. Request one
+      // from the network and wait briefly; the relay answers from its path
+      // table when the peer has announced recently.
+      if (!this.rns.transport.hasPath?.(remoteHashBytes)) {
+        await this.rns.transport.requestPath?.(remoteHashBytes).catch(() => {});
+        const pathDeadline = Date.now() + 10_000;
+        while (
+          !this.rns.transport.hasPath?.(remoteHashBytes) &&
+          Date.now() < pathDeadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        if (!this.rns.transport.hasPath?.(remoteHashBytes)) return false;
+      }
+      // Stage 3 — link: with a real identity, a fully formed OUT
+      // destination; without one, `Destination.recalled` hydrates the
+      // identity from the transport's cache (or solicits it, with the same
+      // patience as the other stages) and verifies it hashes to the dialed
+      // hash under our app name. The peer proves its identity during
+      // identify either way.
+      const out = remoteIdentity
+        ? await Destination.OUT(
+            this.appName,
+            DestType.SINGLE,
+            remoteIdentity,
+            this.rns,
+          )
+        : await Destination.recalled(
+            this.appName,
+            remoteHashBytes,
+            this.rns,
+            10_000,
+          );
+      return await this._establishOutgoingLink(
+        remoteHex,
+        out,
+        initiatorIdentityHash,
+      );
+    } catch {
+      return false;
+    } finally {
+      this.pendingInitiates.delete(remoteHex);
+    }
+  }
+
+  /**
+   * Dials a peer's room destination directly from a known identity (work
+   * document #34): for peers whose identity the application learned
+   * through its own channels.
+   *
+   * @param {InstanceType<typeof Identity>} remoteIdentity
+   * @returns {Promise<boolean>} Whether a link was established.
+   */
+  async dial(remoteIdentity) {
+    if (!this.connected || !this.dest) return false;
+    const out = await Destination.OUT(
+      this.appName,
+      DestType.SINGLE,
+      remoteIdentity,
+      this.rns,
+    );
+    const remoteHex = toHex(/** @type {Uint8Array} */ (out.destinationHash));
+    if (remoteHex === this.myHex) return false;
+    const existing = [...this.peerConns.values()].some(
+      (conn) =>
+        conn.remoteDestHash &&
+        toHex(conn.remoteDestHash) === remoteHex &&
+        conn.link.status === LinkStatus.ACTIVE,
+    );
+    if (existing || this.pendingInitiates.has(remoteHex)) return true;
+    this.pendingInitiates.add(remoteHex);
+    const initiatorIdentityHash = toHex(
+      await Identity.truncatedHash(remoteIdentity.publicKey),
+    );
+    return await this._establishOutgoingLink(
+      remoteHex,
+      out,
+      initiatorIdentityHash,
+    );
   }
 
   /**

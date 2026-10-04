@@ -5,8 +5,7 @@ Propagates document updates over [Reticulum](https://reticulum.network/) mesh ne
 * Public key encryption and authorization using [Reticulum Identities](https://reticulum.network/manual/zen.html#identity-and-nomadism)
 * Flexible network topology and multiple interfaces ranging from TCP to LoRa and HF radio links
 * Very little setup needed with Reticulum announce and discovery mechanisms
-* Sync and awareness traffic rides a reliable, in-order, windowed Link Channel
-  (retransmitted on lossy hops) for performant CRDT synchronization
+* Sync and awareness traffic rides a reliable, in-order, windowed Link Channel (retransmitted on lossy hops) for performant CRDT synchronization
 * Larger CRDT updates are automatically transported as bz2 compressed Resources
 
 Built on [reticulum-js](https://reticulum.js.org/) with aim to support browsers, Node.js, and Deno. For browsers, please read the [browser connectivity](https://reticulum.js.org/documents/Browser_Connectivity.html) notes.
@@ -23,9 +22,7 @@ npm i y-reticulum
 
 ## Usage
 
-Clients connected to the same room name share document updates. In addition to
-a `Y.Doc`, you pass a configured [@reticulum/core](https://reticulum.js.org/)
-instance — the provider does not open network interfaces itself.
+Clients connected to the same room name share document updates. In addition to a `Y.Doc`, you pass a configured [@reticulum/core](https://reticulum.js.org/) instance — the provider does not open network interfaces itself.
 
 ```js
 import * as Y from "yjs"
@@ -125,36 +122,37 @@ The provider extends `ObservableV2` and emits:
 | `status` | `{ connected: boolean }` | the provider (dis)connects from the mesh |
 | `synced` | `{ synced: boolean }` | sync state with the peer mesh changes |
 | `peers` | `{ added: string[], removed: string[] }` | peers are discovered or drop off |
-| `discovered` | `{ remoteHex: string }` | an announce for this room arrives from the mesh, before any glare or policy decision (evidence the room propagates, even when no link forms) |
+| `discovered` | `{ remoteHex: string, publicKeyHex: string }` | an announce for this room arrives from the mesh, before any glare or policy decision (evidence the room propagates, even when no link forms); the peer's public key rides along for the app's peer cache |
 | `announced` | `{}` | this peer's room destination actually broadcasts an announce (connect-time, early-burst and periodic cadences alike) |
 | `announce-failed` | `{ error: string }` | an early-burst announce attempt threw before broadcast, with the reason |
 | `refused` | `{ refusals: Array<{ destinationHash: string \| null, identityHash: string \| null, initiator: boolean, reason?: string }> }` | a peer link was refused by the link policy or the authorization phase |
 
+## Direct dialing
+
+Discovery is announce-driven, but peers that already know each other through other channels don't need to wait for it. From the `discovered` event (or its own state), an application can dial a peer directly:
+
+```js
+provider.on("discovered", ({ remoteHex, publicKeyHex }) => {
+  // persist { remoteHex, publicKeyHex } as your peer cache
+})
+
+// Dial from a persisted peer cache:
+await provider.dialHash(remoteHex)
+// Dial from a known Reticulum identity:
+await provider.dialPeer(remoteIdentity)
+```
+
+Both run the same policy → signed identify → authorization sequence as the announce-driven initiate, and resolve with whether a link was established. Dialing a destination hash the transport doesn't know (or can't solicit an identity for) returns `false` without wedging future attempts. To work out a peer's room destination hash from your own state, `roomDestinationHash(roomName, peerIdentityHashHex)` mirrors the destination derivation exactly.
+
 ## Access control
 
-Pass a `linkPolicy` to gate which peers may sync with your room. The policy is
-a (possibly async) callback that receives the remote peer's
-`remoteIdentityHash` (hex truncated hash of their long-term Reticulum
-identity), their room `remoteDestinationHash` when known (initiator side;
-`null` on the responder side, where it is only learnt after identify), and
-`initiator` telling which side of the link you are. Return `true` to allow the
-link, `false` to refuse it: refused links are torn down before any room traffic flows, and reported on the `refused` event.
+Pass a `linkPolicy` to gate which peers may sync with your room. The policy is a (possibly async) callback that receives the remote peer's `remoteIdentityHash` (hex truncated hash of their long-term Reticulum identity), their room `remoteDestinationHash` when known (initiator side; `null` on the responder side, where it is only learnt after identify), and `initiator` telling which side of the link you are. Return `true` to allow the link, `false` to refuse it: refused links are torn down before any room traffic flows, and reported on the `refused` event.
 
-The identity hash is cryptographically bound on both sides: on the initiator
-side it comes from the peer's signed announce, on the responder side from the
-signed identify handshake over the link. Peers that never identify (e.g. older
-versions without ACL support) are refused after `identifyTimeoutMs` and
-reported with a `null` identityHash.
+The identity hash is cryptographically bound on both sides: on the initiator side it comes from the peer's signed announce, on the responder side from the signed identify handshake over the link. Peers that never identify (e.g. older versions without ACL support) are refused after `identifyTimeoutMs` and reported with a `null` identityHash.
 
-Refusals carry a `reason` telling which gate declined: `"identify-timeout"`
-(the peer never proved its identity), `"link-policy"` (the policy declined),
-`"authorization"` (the authorizer declined or threw) or
-`"authorization-timeout"` (the authorization phase exceeded
-`authorizeTimeoutMs`).
+Refusals carry a `reason` telling which gate declined: `"identify-timeout"` (the peer never proved its identity), `"link-policy"` (the policy declined), `"authorization"` (the authorizer declined or threw) or `"authorization-timeout"` (the authorization phase exceeded `authorizeTimeoutMs`).
 
-Refusals make natural access requests: collect them and, when a user grants
-access, add the peer's identity hash to your allow-list. The next announce
-cycle connects the peers.
+Refusals make natural access requests: collect them and, when a user grants access, add the peer's identity hash to your allow-list. The next announce cycle connects the peers.
 
 ```js
 const granted = new Set([myIdentityHash])
@@ -172,31 +170,14 @@ provider.on("refused", ({ refusals }) => {
 
 ### Application-defined authorization (`authorizeLink`)
 
-A `linkPolicy` only sees the peer's identity hash — enough for "is this peer
-known to me", but not for authorization schemes where the decision needs an
-exchange with the peer itself (for example verifying a Dacar assertion before
-any sync traffic flows). Pass an `authorizeLink` callback to run your own
-protocol on the link after the identity is proven and before any Yjs sync or
-awareness traffic.
+A `linkPolicy` only sees the peer's identity hash — enough for "is this peer known to me", but not for authorization schemes where the decision needs an exchange with the peer itself (for example verifying a Dacar assertion before any sync traffic flows). Pass an `authorizeLink` callback to run your own protocol on the link after the identity is proven and before any Yjs sync or awareness traffic.
 
-The callback receives the established `link`, the proven
-`remoteIdentityHash` (and `remoteDestinationHash` when known, initiator side
-only), which side of the link you are (`initiator`), and an `exchange` with
-two methods bound to the link's channel:
+The callback receives the established `link`, the proven `remoteIdentityHash` (and `remoteDestinationHash` when known, initiator side only), which side of the link you are (`initiator`), and an `exchange` with two methods bound to the link's channel:
 
-- `exchange.send(payload)` delivers an application payload (`Uint8Array`) to
-  the peer, as a reliable ordered channel message.
-- `exchange.receive()` resolves with the next application payload from the
-  peer; payloads arriving before the call are queued, so the two sides can
-  start in either order.
+- `exchange.send(payload)` delivers an application payload (`Uint8Array`) to the peer, as a reliable ordered channel message.
+- `exchange.receive()` resolves with the next application payload from the peer; payloads arriving before the call are queued, so the two sides can start in either order.
 
-Resolve `true` to allow the link — Yjs sync then starts, with anything the
-peer sent meanwhile (typically its initial `syncStep1`) delivered first in
-protocol order. Resolve `false`, throw, or exceed `authorizeTimeoutMs` to
-refuse: the link is torn down and reported on the `refused` event with reason
-`"authorization"` (or `"authorization-timeout"`). The phase composes with
-`linkPolicy`, which is evaluated first, and runs on both sides of every link
-— your protocol decides who speaks first via `initiator`.
+Resolve `true` to allow the link — Yjs sync then starts, with anything the peer sent meanwhile (typically its initial `syncStep1`) delivered first in protocol order. Resolve `false`, throw, or exceed `authorizeTimeoutMs` to refuse: the link is torn down and reported on the `refused` event with reason `"authorization"` (or `"authorization-timeout"`). The phase composes with `linkPolicy`, which is evaluated first, and runs on both sides of every link — your protocol decides who speaks first via `initiator`.
 
 ```js
 const provider = new ReticulumProvider("your-room-name", ydoc, {

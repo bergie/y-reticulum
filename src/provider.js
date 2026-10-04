@@ -70,10 +70,11 @@ import { Room } from "./room.js";
  *   Fired when sync state with the peer mesh changes. (Phase 3.)
  * @property {(event: { added: Array<string>, removed: Array<string> }) => void} peers
  *   Fired when peers are discovered or drop off.
- * @property {(event: { remoteHex: string }) => void} discovered
+ * @property {(event: { remoteHex: string, publicKeyHex: string }) => void} discovered
  *   Fired when an announce for this room arrives from the mesh, before any
  *   glare or policy decision — evidence the room propagates even when no
- *   link forms.
+ *   link forms. The peer's full public key (hex) rides along so apps can
+ *   persist a peer cache and dial directly (see `dialPeer`).
  * @property {(event: {}) => void} announced
  *   Fired each time this peer's room destination actually broadcasts an
  *   announce — the connect-time, early-burst and periodic cadences alike.
@@ -160,8 +161,10 @@ export class ReticulumProvider extends ObservableV2 {
           /** @type {string[]} */ added,
           /** @type {string[]} */ removed,
         ) => this.emit("peers", [{ added, removed }]),
-        onDiscovered: (/** @type {string} */ remoteHex) =>
-          this.emit("discovered", [{ remoteHex }]),
+        onDiscovered: (
+          /** @type {string} */ remoteHex,
+          /** @type {string} */ publicKeyHex,
+        ) => this.emit("discovered", [{ remoteHex, publicKeyHex }]),
         onAnnounced: () => this.emit("announced", [{}]),
         onAnnounceFailed: (/** @type {string} */ error) =>
           this.emit("announce-failed", [{ error }]),
@@ -173,6 +176,34 @@ export class ReticulumProvider extends ObservableV2 {
     });
     await this.room.connect();
     this.emit("status", [{ connected: true }]);
+  }
+
+  /**
+   * Dials a peer's room destination directly from its destination hash (work
+   * document #34): for peers whose room destination hash the application
+   * knows through its own channels. See the Room's dialHash.
+   *
+   * @param {string} remoteHex Hex of the peer's room destination hash.
+   * @param {string} [remoteIdentityHashHex] Hex of the peer's identity hash,
+   *   when the application knows it.
+   * @returns {Promise<boolean>} Whether a link was established.
+   */
+  async dialHash(remoteHex, remoteIdentityHashHex = "") {
+    return (
+      (await this.room?.dialHash(remoteHex, remoteIdentityHashHex)) ?? false
+    );
+  }
+
+  /**
+   * Dials a peer's room destination directly from a known identity (work
+   * document #34): for peers whose identity the application learned
+   * through its own channels.
+   *
+   * @param {InstanceType<typeof Identity>} remoteIdentity
+   * @returns {Promise<boolean>} Whether a link was established.
+   */
+  async dialPeer(remoteIdentity) {
+    return (await this.room?.dial(remoteIdentity)) ?? false;
   }
 
   /** Stop announcing, tear down all peer Links, and release the destination. */
