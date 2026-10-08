@@ -98,17 +98,33 @@ export class PeerConn {
    * @param {Uint8Array|null} options.remoteDestHash
    *   The peer's destination hash. Known on the initiator side (from the
    *   announce that triggered the link); `null` on the responder side.
+   * @param {string|null} options.remoteIdentityHash
+   *   Hex truncated identity hash of the remote peer, when it is known at
+   *   registration: proven on the initiator side by the announce or dial's
+   *   identity recall, on the responder side by the signed identify
+   *   handshake. `null` when the peer never proved its identity (no link
+   *   policy / authorization configured).
    * @param {import("@digitaldefiance/bzip2-wasm").default | null} [options.bz2]
    *   Shared bzip2 provider; set on the link so inbound Resources can be
    *   decompressed, and used to compress outbound ones. `null` disables it.
    * @param {(payload: Uint8Array, peer: PeerConn) => void} options.onData
    * @param {(peer: PeerConn) => void} options.onClose
    */
-  constructor({ link, remoteDestHash, bz2, onData, onClose }) {
+  constructor({
+    link,
+    remoteDestHash,
+    remoteIdentityHash,
+    bz2,
+    onData,
+    onClose,
+  }) {
     this.link = link;
     // The receiver decompresses via the link's bz2 (Resource.accept reads it).
     this.link.bz2 = bz2 ?? undefined;
     this.remoteDestHash = remoteDestHash;
+    /** Hex truncated identity hash of the remote peer, or `null` when the
+     * peer never proved its identity (no policy / authorization). */
+    this.remoteIdentityHash = remoteIdentityHash ?? null;
     /** @type {import("@digitaldefiance/bzip2-wasm").default | undefined} */
     this.bz2 = bz2 ?? undefined;
     /** Reliable typed-message channel over the link (retries + flow control). */

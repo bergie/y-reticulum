@@ -117,7 +117,11 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
 
 /**
  * @typedef {Object} RoomCallbacks
- * @property {(added: string[], removed: string[]) => void} onPeers
+ * @property {(added: string[], removed: string[], identities?: Record<string, string | null>) => void} onPeers
+ *   The third argument maps peer ids to the remote's truncated identity
+ *   hash, when the peer proved its identity during establishment. Peer ids
+ *   are hex link ids (symmetric across both ends); identity hashes are
+ *   stable across reconnects and are what applications display.
  *   Fired whenever peers are discovered or drop off. Ids are hex link_ids.
  * @property {(remoteHex: string, publicKeyHex: string) => void} [onDiscovered]
  *   Fired when an announce matching this room arrives, before any glare
@@ -321,7 +325,7 @@ export class Room {
     this.linkedDestHexes.clear();
     this.pendingInitiates.clear();
     this.synced = false;
-    if (removed.length) this.callbacks.onPeers([], removed);
+    if (removed.length) this.callbacks.onPeers([], removed, {});
 
     if (this.dest) {
       this.rns.transport.unbindLocalDestination(this.dest);
@@ -390,18 +394,13 @@ export class Room {
     // interactive) policy must not let concurrent announces each open a Link.
     this.pendingInitiates.add(remoteHex);
 
-    // Link policy / authorization (initiator side): the announce
-    // cryptographically binds the remote identity, so the policy can run
-    // before any link is opened. The identity hash is also needed as the
-    // authorization context.
-    const needsProvenIdentity = Boolean(this.linkPolicy || this.authorizeLink);
-    /** @type {string} */
-    let initiatorIdentityHash = "";
-    if (needsProvenIdentity) {
-      initiatorIdentityHash = toHex(
-        await Identity.truncatedHash(detail.identity.publicKey),
-      );
-    }
+    // The announce cryptographically binds the remote identity, so the
+    // initiator always knows the peer's identity hash: it feeds the link
+    // policy / authorization context when configured, and peer registration
+    // (the `peers` event's identities map) otherwise.
+    const initiatorIdentityHash = toHex(
+      await Identity.truncatedHash(detail.identity.publicKey),
+    );
     const out = await Destination.OUT(
       this.appName,
       DestType.SINGLE,
@@ -494,7 +493,11 @@ export class Room {
         }
       }
       this.linkedDestHexes.add(remoteHex);
-      this._registerPeer(link, out.destinationHash);
+      this._registerPeer(
+        link,
+        out.destinationHash,
+        initiatorIdentityHash || null,
+      );
       return true;
     } catch {
       // Peer vanished mid-handshake, transport error, etc. — the announce
@@ -670,8 +673,11 @@ export class Room {
       // before any await: the initiator may already be sending its Yjs sync
       // handshake while we identify / run the link policy.
       this._primeChannel(link);
+      // Hoisted: the identity rides into peer registration even when no
+      // policy / authorization is configured (then it stays null)
+      let identityHash = null;
       if (this.linkPolicy || this.authorizeLink) {
-        const identityHash = await this._awaitIdentify(link);
+        identityHash = await this._awaitIdentify(link);
         if (!identityHash) {
           // The peer never proved who they are: refuse without ceremony
           this._unprimeChannel(link);
@@ -731,7 +737,7 @@ export class Room {
           }
         }
       }
-      this._registerPeer(link, null);
+      this._registerPeer(link, null, identityHash);
     } catch {
       // Handshake failed; nothing to clean up.
       if (link) this._unprimeChannel(link);
@@ -911,18 +917,23 @@ export class Room {
    * (syncStep1 + local awareness), mirroring y-webrtc's peer-on-connect path.
    * @param {import("@reticulum/core").Link} link
    * @param {Uint8Array|null} remoteDestHash
+   * @param {string|null} remoteIdentityHash Hex truncated identity hash of
+   *   the remote peer, when proven during establishment.
    */
-  _registerPeer(link, remoteDestHash) {
+  _registerPeer(link, remoteDestHash, remoteIdentityHash = null) {
     const stashed = this._unprimeChannel(link);
     const peer = new PeerConn({
       link,
       remoteDestHash,
+      remoteIdentityHash,
       bz2: this.bz2,
       onData: (payload, p) => this._onPeerData(payload, p),
       onClose: (p) => this._onPeerClose(p),
     });
     this.peerConns.set(peer.peerId, peer);
-    this.callbacks.onPeers([peer.peerId], []);
+    this.callbacks.onPeers([peer.peerId], [], {
+      [peer.peerId]: peer.remoteIdentityHash,
+    });
     // Deliver anything the peer sent before our PeerConn existed (typically
     // its syncStep1) ahead of our own handshake so replies keep protocol order.
     for (const payload of stashed) this._onPeerData(payload, peer);

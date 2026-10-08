@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Peer identity hashes on the `peers` event: each peer's truncated identity hash, proven during link establishment, now rides into peer registration (`PeerConn.remoteIdentityHash`) and out on the `peers` event as a third payload field `identities` (a map from peer id to the hash, or `null` when the peer never proved its identity). On the initiator side the hash comes from the announce or the dial's identity recall; on the responder side from the signed identify handshake — so it is `null` there when no `linkPolicy` / `authorizeLink` is configured. Unlike peer ids (hex link ids, fresh per link), identity hashes are stable across reconnects and are what applications should display
+
 ## [0.4.0] - 2026-10-05
 
 ### Added

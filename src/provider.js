@@ -68,8 +68,12 @@ import { Room } from "./room.js";
  *   Fired when the provider (dis)connects from the mesh.
  * @property {(event: { synced: boolean }) => void} synced
  *   Fired when sync state with the peer mesh changes. (Phase 3.)
- * @property {(event: { added: Array<string>, removed: Array<string> }) => void} peers
- *   Fired when peers are discovered or drop off.
+ * @property {(event: { added: Array<string>, removed: Array<string>, identities: Record<string, string | null> }) => void} peers
+ *   Fired when peers are discovered or drop off. `identities` maps each
+ *   added peer id to the remote's truncated identity hash when the peer
+ *   proved its identity during establishment (announce or signed identify
+ *   handshake), `null` when it did not (no link policy / authorization
+ *   configured on the responder side); empty when peers were removed.
  * @property {(event: { remoteHex: string, publicKeyHex: string }) => void} discovered
  *   Fired when an announce for this room arrives from the mesh, before any
  *   glare or policy decision — evidence the room propagates even when no
@@ -160,7 +164,11 @@ export class ReticulumProvider extends ObservableV2 {
         onPeers: (
           /** @type {string[]} */ added,
           /** @type {string[]} */ removed,
-        ) => this.emit("peers", [{ added, removed }]),
+          /** @type {Record<string, string | null> | undefined} */ identities,
+        ) =>
+          this.emit("peers", [
+            { added, removed, identities: identities ?? {} },
+          ]),
         onDiscovered: (
           /** @type {string} */ remoteHex,
           /** @type {string} */ publicKeyHex,

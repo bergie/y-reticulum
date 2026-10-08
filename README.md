@@ -53,9 +53,10 @@ const provider = new ReticulumProvider("your-room-name", ydoc, {
 
 provider.on("status", ({ connected }) => console.log("connected:", connected))
 provider.on("synced", ({ synced }) => console.log("synced:", synced))
-provider.on("peers", ({ added, removed }) =>
-  console.log("peers added:", added, "removed:", removed),
-)
+provider.on("peers", ({ added, removed, identities }) => {
+  console.log("peers added:", added, "removed:", removed)
+  for (const id of added) console.log("peer", id, "is", identities[id])
+})
 
 await provider.connect()
 
@@ -121,7 +122,7 @@ The provider extends `ObservableV2` and emits:
 | --- | --- | --- |
 | `status` | `{ connected: boolean }` | the provider (dis)connects from the mesh |
 | `synced` | `{ synced: boolean }` | sync state with the peer mesh changes |
-| `peers` | `{ added: string[], removed: string[] }` | peers are discovered or drop off |
+| `peers` | `{ added: string[], removed: string[], identities: Record<string, string \| null> }` | peers are discovered or drop off; `identities` maps each added peer id (hex link id) to the peer's truncated identity hash — stable across reconnects, so it is what applications display — or `null` when the peer never proved its identity (no `linkPolicy`/`authorizeLink` on the responder side) |
 | `discovered` | `{ remoteHex: string, publicKeyHex: string }` | an announce for this room arrives from the mesh, before any glare or policy decision (evidence the room propagates, even when no link forms); the peer's public key rides along for the app's peer cache |
 | `announced` | `{}` | this peer's room destination actually broadcasts an announce (connect-time, early-burst and periodic cadences alike) |
 | `announce-failed` | `{ error: string }` | an early-burst announce attempt threw before broadcast, with the reason |
@@ -148,7 +149,7 @@ Both run the same policy → signed identify → authorization sequence as the a
 
 Pass a `linkPolicy` to gate which peers may sync with your room. The policy is a (possibly async) callback that receives the remote peer's `remoteIdentityHash` (hex truncated hash of their long-term Reticulum identity), their room `remoteDestinationHash` when known (initiator side; `null` on the responder side, where it is only learnt after identify), and `initiator` telling which side of the link you are. Return `true` to allow the link, `false` to refuse it: refused links are torn down before any room traffic flows, and reported on the `refused` event.
 
-The identity hash is cryptographically bound on both sides: on the initiator side it comes from the peer's signed announce, on the responder side from the signed identify handshake over the link. Peers that never identify (e.g. older versions without ACL support) are refused after `identifyTimeoutMs` and reported with a `null` identityHash.
+The identity hash is cryptographically bound on both sides: on the initiator side it comes from the peer's signed announce, on the responder side from the signed identify handshake over the link. Peers that never identify (e.g. older versions without ACL support) are refused after `identifyTimeoutMs` and reported with a `null` identityHash. The proven hash also surfaces on the `peers` event's `identities` map, so applications can show who is in the room; without a `linkPolicy`/`authorizeLink` the responder side never runs identify and reports `null` there.
 
 Refusals carry a `reason` telling which gate declined: `"identify-timeout"` (the peer never proved its identity), `"link-policy"` (the policy declined), `"authorization"` (the authorizer declined or threw) or `"authorization-timeout"` (the authorization phase exceeded `authorizeTimeoutMs`).
 
