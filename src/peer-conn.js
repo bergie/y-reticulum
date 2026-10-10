@@ -104,6 +104,12 @@ export class PeerConn {
    *   identity recall, on the responder side by the signed identify
    *   handshake. `null` when the peer never proved its identity (no link
    *   policy / authorization configured).
+   * @param {{ sync: boolean, write: boolean } | null} [options.capability]
+   *   Capability verdict the authorization phase resolved for this peer
+   *   (work document #3): `write: false` makes this a read-only peer whose
+   *   inbound Doc updates are dropped while awareness and reads still flow.
+   *   `null` when no authorization phase ran — the link gates carried the
+   *   full sync+write capability, as before.
    * @param {import("@digitaldefiance/bzip2-wasm").default | null} [options.bz2]
    *   Shared bzip2 provider; set on the link so inbound Resources can be
    *   decompressed, and used to compress outbound ones. `null` disables it.
@@ -114,6 +120,7 @@ export class PeerConn {
     link,
     remoteDestHash,
     remoteIdentityHash,
+    capability = null,
     bz2,
     onData,
     onClose,
@@ -125,6 +132,12 @@ export class PeerConn {
     /** Hex truncated identity hash of the remote peer, or `null` when the
      * peer never proved its identity (no policy / authorization). */
     this.remoteIdentityHash = remoteIdentityHash ?? null;
+    /** Capability the authorization phase resolved: `write: false` makes
+     * this a read-only peer (inbound Doc updates are dropped). `null` when
+     * no authorization phase ran — full sync+write, as before. */
+    this.capability = capability ?? null;
+    /** Whether this peer's inbound Doc updates may be applied. */
+    this.canWrite = this.capability ? this.capability.write === true : true;
     /** @type {import("@digitaldefiance/bzip2-wasm").default | undefined} */
     this.bz2 = bz2 ?? undefined;
     /** Reliable typed-message channel over the link (retries + flow control). */

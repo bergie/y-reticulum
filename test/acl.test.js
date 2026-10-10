@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { Identity, toHex } from "@reticulum/core";
 import * as Y from "yjs";
-import { ReticulumProvider } from "../src/index.js";
+import { ReticulumProvider, roomDestinationHash } from "../src/index.js";
 import { nudgeAnnounce } from "./loopback.js";
 
 const ROOM = "y-reticulum-acl-smoke";
@@ -95,7 +95,14 @@ test("an initiator-side policy refusal does not wedge later retries", {
   let idB = await Identity.generate();
   let hashA = toHex(await Identity.truncatedHash(await idA.getPublicKey()));
   let hashB = toHex(await Identity.truncatedHash(await idB.getPublicKey()));
-  while (hashA >= hashB) {
+  // Force the glare order so the owner (A) is the initiator and the refusal
+  // happens on its side. The glare rule compares room DESTINATION hashes (a
+  // hash of the room name plus the identity hash), so the loop runs on those
+  // — identity-hash ordering does not determine who initiates.
+  while (
+    (await roomDestinationHash(ROOM, hashA)) >=
+    (await roomDestinationHash(ROOM, hashB))
+  ) {
     idA = await Identity.generate();
     idB = await Identity.generate();
     hashA = toHex(await Identity.truncatedHash(await idA.getPublicKey()));

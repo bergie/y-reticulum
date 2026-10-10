@@ -41,9 +41,22 @@ export const messageQueryAwareness = 3;
  * @param {boolean} roomSynced - whether the room is already synced (gates the
  *   one-shot `onSynced` callback, matching y-webrtc).
  * @param {() => void} onSynced - invoked once when a syncStep2 first arrives.
+ * @param {boolean} [canWrite=true] - whether the sending peer may modify the
+ *   local Doc. `false` gates the write direction only: the peer's syncStep2 /
+ *   update payloads are dropped unread (their state never reaches this Doc),
+ *   while a syncStep1 still earns a syncStep2 reply (a read-only peer may
+ *   read our state) and awareness still flows both ways.
  * @returns {Uint8Array | null} reply bytes, or `null` when no reply is needed.
  */
-export function readMessage(doc, awareness, buf, origin, roomSynced, onSynced) {
+export function readMessage(
+  doc,
+  awareness,
+  buf,
+  origin,
+  roomSynced,
+  onSynced,
+  canWrite = true,
+) {
   const decoder = decoding.createDecoder(buf);
   const encoder = encoding.createEncoder();
   const messageType = decoding.readVarUint(decoder);
@@ -51,6 +64,26 @@ export function readMessage(doc, awareness, buf, origin, roomSynced, onSynced) {
   switch (messageType) {
     case messageSync: {
       encoding.writeVarUint(encoder, messageSync);
+      if (!canWrite) {
+        // Write-gated peer: replicate only the read half of the sync protocol
+        // by hand. A syncStep1 requests our state and earns a (state-vector-
+        // scoped) syncStep2 reply; a syncStep2/update carries THEIR state,
+        // which must never reach this Doc, so it is dropped. The handshake
+        // still counts as synced: the peer did deliver its state, we chose
+        // not to adopt it.
+        const syncMessageType = decoding.readVarUint(decoder);
+        if (syncMessageType === syncProtocol.messageYjsSyncStep1) {
+          const stateVector = decoding.readVarUint8Array(decoder);
+          syncProtocol.writeSyncStep2(encoder, doc, stateVector);
+          sendReply = true;
+        } else if (
+          syncMessageType === syncProtocol.messageYjsSyncStep2 &&
+          !roomSynced
+        ) {
+          onSynced();
+        }
+        break;
+      }
       const syncMessageType = syncProtocol.readSyncMessage(
         decoder,
         encoder,

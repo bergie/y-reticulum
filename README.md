@@ -101,8 +101,10 @@ new ReticulumProvider(roomName, ydoc[, opts])
   // after the identity is proven and before any room traffic flows: the
   // callback receives the live link plus a send/receive exchange bound to the
   // link's channel, so it can run its own protocol (e.g. a Dacar assertion
-  // exchange) before Yjs sync is allowed to start. See "Access control"
-  // below.
+  // exchange) before Yjs sync is allowed to start. The verdict resolves the
+  // peer's capability: `true` grants full sync+write, a `{ sync, write }`
+  // object grants exactly the flags it set (a `{ sync: true }` peer is
+  // read-only), and everything else refuses. See "Access control" below.
   authorizeLink: async ({ link, remoteIdentityHash, initiator, exchange }) => {
     if (initiator) {
       await exchange.send(encodeAssertionRequest(remoteIdentityHash))
@@ -113,6 +115,10 @@ new ReticulumProvider(roomName, ydoc[, opts])
   // How long the authorization phase may run before the link is refused.
   // Only relevant with an `authorizeLink`.
   authorizeTimeoutMs: 10_000,
+  // Cap (bytes) on the uncompressed size of inbound Resource transfers,
+  // applied from link establishment. Defaults to the @reticulum/core cap
+  // (32 MiB per resource).
+  maxResourceSize: 8 * 1024 * 1024,
 }
 ```
 
@@ -122,7 +128,7 @@ The provider extends `ObservableV2` and emits:
 | --- | --- | --- |
 | `status` | `{ connected: boolean }` | the provider (dis)connects from the mesh |
 | `synced` | `{ synced: boolean }` | sync state with the peer mesh changes |
-| `peers` | `{ added: string[], removed: string[], identities: Record<string, string \| null> }` | peers are discovered or drop off; `identities` maps each added peer id (hex link id) to the peer's truncated identity hash — stable across reconnects, so it is what applications display — or `null` when the peer never proved its identity (no `linkPolicy`/`authorizeLink` on the responder side) |
+| `peers` | `{ added: string[], removed: string[], identities: Record<string, string \| null> }` | peers are discovered or drop off; `identities` maps each added peer id (hex link id) to the peer's truncated identity hash — stable across reconnects, so it is what applications display — or `null` when the peer never proved its identity. A responder without a `linkPolicy`/`authorizeLink` never demands identify, but an initiator that runs its own gates still identifies voluntarily, and that proven hash is then reported (a later `peers` event with the refreshed `identities` map); `null` remains when neither side runs gates |
 | `discovered` | `{ remoteHex: string, publicKeyHex: string }` | an announce for this room arrives from the mesh, before any glare or policy decision (evidence the room propagates, even when no link forms); the peer's public key rides along for the app's peer cache |
 | `announced` | `{}` | this peer's room destination actually broadcasts an announce (connect-time, early-burst and periodic cadences alike) |
 | `announce-failed` | `{ error: string }` | an early-burst announce attempt threw before broadcast, with the reason |
@@ -178,7 +184,7 @@ The callback receives the established `link`, the proven `remoteIdentityHash` (a
 - `exchange.send(payload)` delivers an application payload (`Uint8Array`) to the peer, as a reliable ordered channel message.
 - `exchange.receive()` resolves with the next application payload from the peer; payloads arriving before the call are queued, so the two sides can start in either order.
 
-Resolve `true` to allow the link — Yjs sync then starts, with anything the peer sent meanwhile (typically its initial `syncStep1`) delivered first in protocol order. Resolve `false`, throw, or exceed `authorizeTimeoutMs` to refuse: the link is torn down and reported on the `refused` event with reason `"authorization"` (or `"authorization-timeout"`). The phase composes with `linkPolicy`, which is evaluated first, and runs on both sides of every link — your protocol decides who speaks first via `initiator`.
+Resolve `true` to allow the link with full sync+write — Yjs sync then starts, with anything the peer sent meanwhile (typically its initial `syncStep1`) delivered first in protocol order. Resolve a capability object to grant exactly the flags it sets: `{ sync: true }` makes the peer read-only — awareness keeps flowing both ways and the peer keeps receiving our Doc updates, but its own Doc updates are dropped and never reach our document, so a read-only role (e.g. a Dacar observer grant) is enforced at the transport. Resolve `false`, `undefined`, throw, or exceed `authorizeTimeoutMs` to refuse: the link is torn down and reported on the `refused` event with reason `"authorization"` (or `"authorization-timeout"`). The verdict is fail-closed — only `true` or an object granting at least one capability allows the link, so an authorizer that returns without a verdict never grants access. The phase composes with `linkPolicy`, which is evaluated first, and runs on both sides of every link — your protocol decides who speaks first via `initiator`.
 
 ```js
 const provider = new ReticulumProvider("your-room-name", ydoc, {
@@ -198,6 +204,20 @@ const provider = new ReticulumProvider("your-room-name", ydoc, {
   authorizeTimeoutMs: 10_000,
 })
 ```
+
+### Revoking access on live links
+
+The `linkPolicy` and `authorizeLink` verdicts are evaluated when a link is established. When the application's authorization for a peer changes afterwards — a grant is revoked, a role is demoted — the live link does not re-evaluate on its own. Two teardown methods let you enforce the change against established links instead of waiting for them to drop:
+
+```js
+// Drop one link by peer id (hex link id, from the `peers` event):
+provider.dropPeer(peerId)
+
+// Drop every live link whose remote proved this identity hash:
+provider.revokePeer(remoteIdentityHash)
+```
+
+`revokePeer` matches the proven identity hash on both link sides (announce/identify on the initiator side, the signed identify handshake on the responder side), so it covers peers we initiated to and peers that dialed us. Peers registered without identity proof — no `linkPolicy`/`authorizeLink` configured — cannot be matched by hash; use `dropPeer` with their peer id for those. Dropped peers are reported as removed on the `peers` event; whether they may reconnect is up to your gates, which run again on the next establishment attempt.
 
 ## License
 

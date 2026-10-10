@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Capability verdicts from the authorization phase (work document #3): `authorizeLink` may now resolve a `{ sync, write }` object instead of a boolean — `{ sync: true }` makes the peer read-only, so its inbound Doc updates are dropped while awareness still flows both ways and it keeps receiving our updates; `true` remains full sync+write. The capability is carried on the `PeerConn` and enforced where inbound payloads are applied
+- Live-link teardown APIs (work document #3): `provider.dropPeer(peerId)` tears down a peer link by peer id, and `provider.revokePeer(remoteIdentityHash)` tears down every live link whose remote proved the given identity hash — so applications can enforce authorization changes (e.g. a grant revocation) against established links instead of waiting for them to drop. `Room` exposes the same two methods
+- `maxResourceSize` provider/room option bounding the uncompressed size of inbound Resource transfers, applied from link establishment so peers held in the pre-authorization window cannot make us buffer advertisements we would never deliver
+- A voluntary identify from an ungated initiator is now recorded: when no `linkPolicy`/`authorizeLink` is configured the responder still accepts the signed identify handshake and refreshes the `peers` event's `identities` map with the proven hash
+
+### Changed
+
+- `authorizeLink` verdicts are fail-closed: only `true` or an object granting at least one capability allows the link. Previously any truthy verdict — including an async authorizer that fell off the end of its body (implicit `undefined`) — granted full access
+
+### Fixed
+
+- Inbound link handshakes are now capped while in flight (`maxConns × 2`): links held in the identify / policy / authorization phases are not yet registered peers, so an ungranted flood could previously hold unbounded concurrent handshakes
+
 ## [0.4.1] - 2026-10-08
 
 ### Added

@@ -56,6 +56,38 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
   return diff === 0;
 }
 
+/** The full capability an authorization phase grants when it resolves `true`. */
+const FULL_CAPABILITY = /** @type {{ sync: boolean, write: boolean }} */ (
+  Object.freeze({ sync: true, write: true })
+);
+
+/**
+ * Normalizes a {@link LinkAuthorizer} verdict into a per-peer capability
+ * record (work document #3). `true` grants full sync+write; a verdict object
+ * grants exactly the flags it sets (`{ sync: true }` makes the peer
+ * read-only: awareness and reads flow, but its Doc updates are dropped);
+ * anything else — `false`, `undefined`, `null`, or a truthy non-boolean — is
+ * a refusal. The non-boolean cases are fail-closed on purpose: an async
+ * authorizer that falls off the end of its function body (implicit
+ * `undefined`) must not grant access, and only a deliberate `true` or an
+ * explicit capability object may.
+ *
+ * @param {any} verdict
+ * @returns {{ sync: boolean, write: boolean } | null} The capability, or
+ *   `null` when the verdict refuses the link.
+ */
+function normalizeCapability(verdict) {
+  if (verdict === true) return FULL_CAPABILITY;
+  if (verdict !== null && typeof verdict === "object") {
+    const capability = {
+      sync: verdict.sync === true,
+      write: verdict.write === true,
+    };
+    if (capability.sync || capability.write) return capability;
+  }
+  return null;
+}
+
 /**
  * Context handed to a room's {@link LinkPolicy} for every inbound and
  * outbound peer link.
@@ -109,10 +141,13 @@ function bytesEqual(/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) {
 /**
  * Application-defined authorization for a peer link, run after the identity
  * is proven and before any room traffic flows. May exchange messages with the
- * peer via `context.exchange`; return (or resolve) `false` to refuse the
- * link. Throwing is treated as a refusal.
+ * peer via `context.exchange`. The verdict resolves the peer's capability:
+ * `true` grants full sync+write; a `{ sync, write }` object grants exactly
+ * the flags it sets (`{ sync: true }` makes the peer read-only — awareness
+ * and reads flow, but its Doc updates are dropped); `false`, `undefined`, a
+ * throw, or exceeding `authorizeTimeoutMs` refuses the link.
  *
- * @typedef {(context: LinkAuthorizationContext) => boolean | Promise<boolean>} LinkAuthorizer
+ * @typedef {(context: LinkAuthorizationContext) => boolean | { sync?: boolean, write?: boolean } | Promise<boolean | { sync?: boolean, write?: boolean }>} LinkAuthorizer
  */
 
 /**
@@ -175,6 +210,11 @@ export class Room {
    *   evaluated first.
    * @param {number} [options.authorizeTimeoutMs] How long the authorization
    *   phase may run before the link is refused.
+   * @param {number} [options.maxResourceSize] Cap (bytes) on the uncompressed
+   *   size of inbound Resource transfers accepted on peer links. Applied from
+   *   link establishment — including the pre-authorization window — so peers
+   *   held in the gate window cannot make us buffer advertisements we would
+   *   never deliver. Defaults to the `@reticulum/core` cap (32 MiB).
    * @param {RoomCallbacks} options.callbacks
    */
   constructor({
@@ -189,6 +229,7 @@ export class Room {
     identifyTimeoutMs = 10_000,
     authorizeLink,
     authorizeTimeoutMs = 10_000,
+    maxResourceSize,
     callbacks,
   }) {
     this.doc = doc;
@@ -202,7 +243,16 @@ export class Room {
     this.identifyTimeoutMs = identifyTimeoutMs;
     this.authorizeLink = authorizeLink ?? null;
     this.authorizeTimeoutMs = authorizeTimeoutMs;
+    this.maxResourceSize = maxResourceSize;
     this.callbacks = callbacks;
+
+    /** In-flight inbound link handshakes (see {@link Room._onLinkRequest}). */
+    this.inFlightHandshakes = 0;
+    /** Flood cap on concurrent handshakes: a link held in the identify /
+     * policy / authorization phases is not yet in peerConns, so maxConns
+     * does not bound how many ungranted peers can hold us at once. Derived
+     * from maxConns; not an option, so flood behavior stays uniform. */
+    this.maxInFlightHandshakes = maxConns * 2;
 
     /** @type {import("@reticulum/core").Destination|null} */
     this.dest = null;
@@ -469,14 +519,17 @@ export class Room {
         await link.identify(this.identity);
       }
       // Application-defined authorization phase: runs after the identity is
-      // proven and before any room traffic flows.
+      // proven and before any room traffic flows. The verdict resolves the
+      // peer's capability ({ sync, write }); a null capability refuses.
+      /** @type {{ sync: boolean, write: boolean } | undefined} */
+      let capability;
       if (this.authorizeLink) {
         const verdict = await this._authorizeLink(link, {
           remoteIdentityHash: initiatorIdentityHash,
           remoteDestinationHash: remoteHex,
           initiator: true,
         });
-        if (!verdict.allowed) {
+        if (!verdict.capability) {
           this._unprimeChannel(link);
           await link.teardown();
           this.callbacks.onRefused?.([
@@ -491,12 +544,14 @@ export class Room {
           ]);
           return false;
         }
+        capability = verdict.capability;
       }
       this.linkedDestHexes.add(remoteHex);
       this._registerPeer(
         link,
         out.destinationHash,
         initiatorIdentityHash || null,
+        capability,
       );
       return true;
     } catch {
@@ -661,6 +716,8 @@ export class Room {
   async _onLinkRequest(event) {
     if (!this.connected || !this.dest) return;
     if (this.peerConns.size >= this.maxConns) return;
+    if (this.inFlightHandshakes >= this.maxInFlightHandshakes) return;
+    this.inFlightHandshakes += 1;
     const packet = /** @type {any} */ (event).detail.packet;
     let link = /** @type {import("@reticulum/core").Link|null} */ (null);
     try {
@@ -673,9 +730,12 @@ export class Room {
       // before any await: the initiator may already be sending its Yjs sync
       // handshake while we identify / run the link policy.
       this._primeChannel(link);
-      // Hoisted: the identity rides into peer registration even when no
-      // policy / authorization is configured (then it stays null)
+      // Hoisted: the identity and capability ride into peer registration
+      // even when no policy / authorization is configured (then both stay
+      // null / undefined)
       let identityHash = null;
+      /** @type {{ sync: boolean, write: boolean } | undefined} */
+      let capability;
       if (this.linkPolicy || this.authorizeLink) {
         identityHash = await this._awaitIdentify(link);
         if (!identityHash) {
@@ -714,13 +774,15 @@ export class Room {
         }
         // Application-defined authorization phase: runs after the identity
         // is proven (and the policy passed) and before any room traffic.
+        // The verdict resolves the peer's capability; a null capability
+        // refuses the link.
         if (this.authorizeLink) {
           const verdict = await this._authorizeLink(link, {
             remoteIdentityHash: identityHash,
             remoteDestinationHash: null,
             initiator: false,
           });
-          if (!verdict.allowed) {
+          if (!verdict.capability) {
             this._unprimeChannel(link);
             await link.teardown();
             this.callbacks.onRefused?.([
@@ -735,12 +797,15 @@ export class Room {
             ]);
             return;
           }
+          capability = verdict.capability;
         }
       }
-      this._registerPeer(link, null, identityHash);
+      this._registerPeer(link, null, identityHash, capability);
     } catch {
       // Handshake failed; nothing to clean up.
       if (link) this._unprimeChannel(link);
+    } finally {
+      this.inFlightHandshakes -= 1;
     }
   }
 
@@ -777,6 +842,12 @@ export class Room {
    * @param {import("@reticulum/core").Link} link
    */
   _primeChannel(link) {
+    // Bound inbound Resource transfers (the @reticulum/core default cap is
+    // 32 MiB per resource): a peer held in the pre-authorization window can
+    // otherwise make the link accept large advertisements it will never
+    // deliver. Applied here, right after link establishment, so the cap
+    // covers the gate window too.
+    link.maxResourceSize = this.maxResourceSize;
     const channel = link.getChannel();
     channel.registerMessageType(YjsSyncMessage);
     channel.registerMessageType(LinkAuthMessage);
@@ -837,15 +908,17 @@ export class Room {
    *
    * @param {import("@reticulum/core").Link} link
    * @param {{ remoteIdentityHash: string, remoteDestinationHash: string | null, initiator: boolean }} proven
-   * @returns {Promise<{ allowed: boolean, timedOut: boolean }>}
+   * @returns {Promise<{ capability: { sync: boolean, write: boolean } | null, timedOut: boolean }>}
+   *   `capability: null` refuses the link (fail-closed: an authorizer that
+   *   resolves `undefined` does not grant access).
    */
   async _authorizeLink(
     link,
     { remoteIdentityHash, remoteDestinationHash, initiator },
   ) {
-    if (!this.authorizeLink) return { allowed: true, timedOut: false };
+    if (!this.authorizeLink) return { capability: null, timedOut: false };
     const primed = this._primedChannels.get(link);
-    if (!primed) return { allowed: false, timedOut: false };
+    if (!primed) return { capability: null, timedOut: false };
     const channel = link.getChannel();
 
     /** Mirrors PeerConn._sendChannel's readiness/retry loop, for auth bytes. */
@@ -904,9 +977,9 @@ export class Room {
           );
         }),
       ]);
-      return { allowed: verdict !== false, timedOut: false };
+      return { capability: normalizeCapability(verdict), timedOut: false };
     } catch {
-      return { allowed: false, timedOut: true };
+      return { capability: null, timedOut: true };
     } finally {
       if (timer !== null) clearTimeout(timer);
     }
@@ -919,13 +992,22 @@ export class Room {
    * @param {Uint8Array|null} remoteDestHash
    * @param {string|null} remoteIdentityHash Hex truncated identity hash of
    *   the remote peer, when proven during establishment.
+   * @param {{ sync: boolean, write: boolean } | null} [capability] Capability
+   *   the authorization phase resolved for this peer; `null`/undefined when
+   *   no authorization phase ran (full sync+write, as before).
    */
-  _registerPeer(link, remoteDestHash, remoteIdentityHash = null) {
+  _registerPeer(
+    link,
+    remoteDestHash,
+    remoteIdentityHash = null,
+    capability = null,
+  ) {
     const stashed = this._unprimeChannel(link);
     const peer = new PeerConn({
       link,
       remoteDestHash,
       remoteIdentityHash,
+      capability,
       bz2: this.bz2,
       onData: (payload, p) => this._onPeerData(payload, p),
       onClose: (p) => this._onPeerClose(p),
@@ -934,6 +1016,24 @@ export class Room {
     this.callbacks.onPeers([peer.peerId], [], {
       [peer.peerId]: peer.remoteIdentityHash,
     });
+    if (remoteIdentityHash == null) {
+      // No gates configured, so identify never ran on our side — but the
+      // initiator may still identify voluntarily (it does whenever it runs
+      // its own policy). Record the proven hash and refresh the peers
+      // event's identities map so apps see who connected.
+      link.addEventListener(
+        "identify",
+        (/** @type {Event} */ event) => {
+          const identity = /** @type {any} */ (event).detail?.identity;
+          if (!identity || peer.closed) return;
+          peer.remoteIdentityHash = toHex(identity.getSalt());
+          this.callbacks.onPeers([], [], {
+            [peer.peerId]: peer.remoteIdentityHash,
+          });
+        },
+        { once: true },
+      );
+    }
     // Deliver anything the peer sent before our PeerConn existed (typically
     // its syncStep1) ahead of our own handshake so replies keep protocol order.
     for (const payload of stashed) this._onPeerData(payload, peer);
@@ -952,6 +1052,46 @@ export class Room {
     }
     this.callbacks.onPeers([], [peer.peerId]);
     this._checkSynced();
+  }
+
+  /**
+   * Tears down a live peer link by peer id (hex link id, as reported on the
+   * `peers` event). Sync with that peer stops immediately and it is reported
+   * as removed. Used when the application's authorization for a peer changes
+   * after the link was established (e.g. a grant revocation).
+   *
+   * @param {string} peerId
+   * @returns {boolean} Whether a live peer was dropped.
+   */
+  dropPeer(peerId) {
+    const peer = this.peerConns.get(peerId);
+    if (!peer) return false;
+    peer.destroy();
+    this._onPeerClose(peer);
+    return true;
+  }
+
+  /**
+   * Tears down every live peer link whose remote proved the given truncated
+   * identity hash (hex). Identity-proofed peers register their hash on both
+   * link sides — announce/identify on the initiator side, the signed
+   * identify handshake on the responder side — so this covers peers we
+   * initiated to and peers that dialed us. Peers registered without an
+   * identity proof (no link policy / authorization configured) cannot be
+   * matched by hash; drop those by peer id with {@link Room.dropPeer}.
+   *
+   * @param {string} remoteIdentityHash Hex truncated identity hash.
+   * @returns {number} How many live peers were dropped.
+   */
+  revokePeer(remoteIdentityHash) {
+    let dropped = 0;
+    for (const peer of [...this.peerConns.values()]) {
+      if (peer.remoteIdentityHash !== remoteIdentityHash) continue;
+      peer.destroy();
+      this._onPeerClose(peer);
+      dropped += 1;
+    }
+    return dropped;
   }
 
   /**
@@ -991,6 +1131,7 @@ export class Room {
         peer.synced = true;
         this._checkSynced();
       },
+      peer.canWrite,
     );
     if (reply) this._send(peer, reply);
   }

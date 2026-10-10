@@ -57,6 +57,12 @@ import { Room } from "./room.js";
  * @property {number} [authorizeTimeoutMs]
  *   How long the authorization phase may run before the link is refused.
  *   Only relevant with an `authorizeLink`.
+ * @property {number} [maxResourceSize]
+ *   Cap (bytes) on the uncompressed size of inbound Resource transfers
+ *   accepted on peer links. Applied from link establishment — including the
+ *   pre-authorization window — so peers held in the gate window cannot make
+ *   us buffer advertisements we would never deliver. Defaults to the
+ *   `@reticulum/core` cap (32 MiB).
  */
 
 /**
@@ -118,6 +124,7 @@ export class ReticulumProvider extends ObservableV2 {
     this.identifyTimeoutMs = opts.identifyTimeoutMs ?? 10_000;
     this.authorizeLink = opts.authorizeLink ?? null;
     this.authorizeTimeoutMs = opts.authorizeTimeoutMs ?? 10_000;
+    this.maxResourceSize = opts.maxResourceSize;
 
     /** Resolved with the room destination's identity on connect(). */
     this.identityPromise = opts.identity
@@ -160,6 +167,7 @@ export class ReticulumProvider extends ObservableV2 {
       identifyTimeoutMs: this.identifyTimeoutMs,
       authorizeLink: this.authorizeLink,
       authorizeTimeoutMs: this.authorizeTimeoutMs,
+      maxResourceSize: this.maxResourceSize,
       callbacks: {
         onPeers: (
           /** @type {string[]} */ added,
@@ -212,6 +220,32 @@ export class ReticulumProvider extends ObservableV2 {
    */
   async dialPeer(remoteIdentity) {
     return (await this.room?.dial(remoteIdentity)) ?? false;
+  }
+
+  /**
+   * Tears down a live peer link by peer id (hex link id, as reported on the
+   * `peers` event) — see `Room.dropPeer`. Used when the application's
+   * authorization for a peer changes after the link was established.
+   *
+   * @param {string} peerId
+   * @returns {boolean} Whether a live peer was dropped.
+   */
+  dropPeer(peerId) {
+    return this.room?.dropPeer(peerId) ?? false;
+  }
+
+  /**
+   * Tears down every live peer link whose remote proved the given truncated
+   * identity hash (hex) — see `Room.revokePeer`. Identity hashes surface on
+   * the `peers` event's `identities` map and in `refused` payloads. Peers
+   * registered without identity proof (no `linkPolicy`/`authorizeLink`
+   * configured) cannot be matched by hash; use `dropPeer` for those.
+   *
+   * @param {string} remoteIdentityHash Hex truncated identity hash.
+   * @returns {number} How many live peers were dropped.
+   */
+  revokePeer(remoteIdentityHash) {
+    return this.room?.revokePeer(remoteIdentityHash) ?? 0;
   }
 
   /** Stop announcing, tear down all peer Links, and release the destination. */
