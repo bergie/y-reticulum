@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-10
+
 ### Added
 
 - Capability verdicts from the authorization phase (work document #3): `authorizeLink` may now resolve a `{ sync, write }` object instead of a boolean — `{ sync: true }` makes the peer read-only, so its inbound Doc updates are dropped while awareness still flows both ways and it keeps receiving our updates; `true` remains full sync+write. The capability is carried on the `PeerConn` and enforced where inbound payloads are applied
