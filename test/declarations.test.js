@@ -6,11 +6,16 @@
  * `src/index.js` but the declaration pipeline breaks (or a re-exported module
  * stops emitting a sibling declaration), consumers fall back to inference or
  * fail to resolve types entirely. This test catches both.
+ *
+ * The publish pipeline (`prepublishOnly`) runs `tsc -p tsconfig.json`; this
+ * test mirrors it through the compiler API instead of spawning the CLI, so it
+ * runs under every supported runtime (spawning `process.execPath` is not
+ * portable — under Deno that is the deno binary, which would need its own
+ * subcommand and permission flags). Emission lands under `node_modules/`,
+ * which is gitignored and covered by the Deno test script's scoped sandbox.
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -38,17 +43,44 @@ function entryExportNames() {
 
 test("tsc emits a declaration for every public export", {
   timeout: 30000,
-}, () => {
-  const outDir = mkdtempSync(path.join(tmpdir(), "y-reticulum-dts-"));
+}, async () => {
+  const outDir = mkdtempSync(
+    path.join(root, "node_modules", "y-reticulum-dts-"),
+  );
   try {
-    const tsc = path.join(root, "node_modules", "typescript", "bin", "tsc");
-    execFileSync(
-      process.execPath,
-      [tsc, "-p", path.join(root, "tsconfig.json"), "--outDir", outDir],
-      {
-        cwd: root,
-        stdio: "pipe",
-      },
+    const ts = (await import("typescript")).default;
+    const configFile = ts.readConfigFile(
+      path.join(root, "tsconfig.json"),
+      ts.sys.readFile,
+    );
+    assert.ok(
+      !configFile.error,
+      `tsconfig.json failed to parse: ${ts.flattenDiagnosticMessageText(configFile.error?.messageText, " ")}`,
+    );
+    const parsed = ts.parseJsonConfigFileContent(
+      configFile.config,
+      ts.sys,
+      root,
+    );
+    const program = ts.createProgram(parsed.fileNames, {
+      ...parsed.options,
+      outDir,
+      noEmit: false,
+    });
+    const diagnostics = [
+      ...ts.getPreEmitDiagnostics(program),
+      ...program.emit().diagnostics,
+    ].filter(
+      (diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error,
+    );
+    assert.equal(
+      diagnostics.length,
+      0,
+      diagnostics
+        .map((diagnostic) =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+        )
+        .join("; ") || "no diagnostics",
     );
 
     const indexDts = readFileSync(path.join(outDir, "index.d.ts"), "utf8");
