@@ -25,8 +25,14 @@ import {
   PacketType,
   Reticulum,
 } from "@reticulum/core";
+import { TransportCore } from "@reticulum/core/src/transport/transport.js";
 import { TCPClientInterface, TCPServerInterface } from "@reticulum/node";
 import { roomDestinationName } from "../src/destination.js";
+
+// Skip inline stamp mining (see test/loopback.js): 0.10.0 emits announce
+// stamps by default, which takes minutes of proof-of-work per first announce.
+TransportCore.STAMP_DESTINATIONS = false;
+TransportCore.STAMP_PATH_REQUESTS = false;
 
 const ROOM_NAME = "y-reticulum-transport-smoke";
 const HOST = "127.0.0.1";

@@ -6,7 +6,17 @@
  */
 import net from "node:net";
 import { Reticulum } from "@reticulum/core";
+import { TransportCore } from "@reticulum/core/src/transport/transport.js";
 import { TCPClientInterface, TCPServerInterface } from "@reticulum/node";
+
+// @reticulum/core 0.10.0 emits announce/path-request stamps by default
+// (RNS 1.6.1 parity), mined inline in the awaited announce() — minutes of
+// WebCrypto proof-of-work per first announce at DESTINATION_VALUE 25. The
+// `[stamps]` config can only turn knobs on, so opt out via the process-wide
+// transport statics. Stamp enforcement stays off, so stamp-less traffic is
+// still accepted on the wire.
+TransportCore.STAMP_DESTINATIONS = false;
+TransportCore.STAMP_PATH_REQUESTS = false;
 
 export const HOST = "127.0.0.1";
 

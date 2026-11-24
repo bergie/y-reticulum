@@ -722,6 +722,9 @@ export class Room {
     let link = /** @type {import("@reticulum/core").Link|null} */ (null);
     try {
       link = await this.dest.acceptLink(packet);
+      // 0.10.0: an invalid / rejected LINKREQUEST resolves to null instead
+      // of throwing (the handshake failure is logged by @reticulum/core)
+      if (!link) return;
       if (!this.connected) {
         await link.teardown();
         return;

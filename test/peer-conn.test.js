@@ -133,7 +133,11 @@ test("PeerConn exchanges small payloads over the Channel and large over a Resour
   assert.deepEqual(bReceived[0], small);
 
   // --- A payload larger than the channel MDU travels as a Resource ------
-  const large = new Uint8Array(2000);
+  // Scaled to the negotiated MDU: 0.10.0 link MTU discovery upgrades the
+  // link (and with it the channel MDU) above the old 500-byte protocol
+  // default on loopback interfaces, so a fixed-size fixture no longer
+  // reliably exceeds it.
+  const large = new Uint8Array(connB.channel.mdu + 1024);
   for (let i = 0; i < large.length; i++) large[i] = i & 0xff;
   assert.ok(
     large.length > connB.channel.mdu,

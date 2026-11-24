@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated `@reticulum/core` and `@reticulum/node` from 0.9.6 to 0.10.0. Brings link MTU discovery (links upgrade above the 500-byte protocol MTU on interfaces that can carry larger frames, raising the Channel MDU with it), RNS 1.6.1 announce/path-request stamp emission (on by default, enforcement still off), and several link/resource hardening fixes. `Room`'s inbound link-request path now handles 0.10.0's `acceptLink` returning `null` for rejected LINKREQUESTs
+
+### Fixed
+
+- The peer-conn smoketest's Resource-transfer fixture is now scaled to the negotiated channel MDU instead of a hardcoded 2000 bytes, so it keeps exercising the Resource path under 0.10.0's MTU-discovery-upgraded links. The test suite opts out of inline stamp mining (process-wide transport statics) since a single stamped announce otherwise takes minutes of proof-of-work
 ## [0.5.0] - 2026-10-10
 
 ### Added
