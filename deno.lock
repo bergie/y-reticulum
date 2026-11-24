@@ -52,8 +52,8 @@
     "packageJson": {
       "dependencies": [
         "npm:@digitaldefiance/bzip2-wasm@^1.1.1",
-        "npm:@reticulum/core@0.9",
-        "npm:@reticulum/node@0.9",
+        "npm:@reticulum/core@0.10",
+        "npm:@reticulum/node@0.10",
         "npm:@types/node@^26.1.2",
         "npm:lib0@~0.2.117",
         "npm:typescript@^6.0.3",
