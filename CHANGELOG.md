@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-24
+
 ### Changed
 
 - Updated `@reticulum/core` and `@reticulum/node` from 0.9.6 to 0.10.0. Brings link MTU discovery (links upgrade above the 500-byte protocol MTU on interfaces that can carry larger frames, raising the Channel MDU with it), RNS 1.6.1 announce/path-request stamp emission (on by default, enforcement still off), and several link/resource hardening fixes. `Room`'s inbound link-request path now handles 0.10.0's `acceptLink` returning `null` for rejected LINKREQUESTs
